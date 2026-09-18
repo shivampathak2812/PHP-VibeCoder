@@ -2,7 +2,7 @@
 from pathlib import Path
 
 
-BASE_DIR = Path(r"D:\PHP-VibeCoder")
+BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "generated_projects"
 
 

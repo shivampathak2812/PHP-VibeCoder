@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agents.gemini_model_manager import GeminiModelManager
 from agents.project_analyzer import PHPProjectAnalyzer
 from rag.context_builder import PHPContextBuilder
@@ -167,8 +169,9 @@ Cover:
 
 def main():
 
-    project_path = (
-        r"D:\PHP-VibeCoder\generated_projects\product-api"
+    project_path = str(
+        Path(__file__).resolve().parent.parent
+        / "generated_projects" / "product-api"
     )
 
     agent = PHPCodeUnderstandingAgent(

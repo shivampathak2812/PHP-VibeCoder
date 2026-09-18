@@ -222,8 +222,9 @@ class PHPProjectAnalyzer:
 
 def main():
 
-    project_path = (
-        r"D:\PHP-VibeCoder\generated_projects\product-api"
+    project_path = str(
+        Path(__file__).resolve().parent.parent
+        / "generated_projects" / "product-api"
     )
 
     analyzer = PHPProjectAnalyzer(project_path)

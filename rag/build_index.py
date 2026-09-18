@@ -10,7 +10,7 @@ from sentence_transformers import SentenceTransformer
 # Paths
 # =========================
 
-BASE_DIR = Path(r"D:\PHP-VibeCoder")
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 CHUNKS_FILE = BASE_DIR / "knowledge_base" / "chunks" / "php_chunks.jsonl"
 

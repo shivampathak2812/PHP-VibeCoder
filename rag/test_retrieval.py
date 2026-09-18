@@ -9,7 +9,7 @@ from sentence_transformers import SentenceTransformer
 # Paths
 # =========================
 
-BASE_DIR = Path(r"D:\PHP-VibeCoder")
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 INDEX_FILE = BASE_DIR / "knowledge_base" / "processed" / "php_faiss.index"
 METADATA_FILE = BASE_DIR / "knowledge_base" / "processed" / "php_metadata.json"

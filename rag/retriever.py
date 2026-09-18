@@ -5,7 +5,7 @@ import faiss
 from sentence_transformers import SentenceTransformer
 
 
-BASE_DIR = Path(r"D:\PHP-VibeCoder")
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 INDEX_FILE = (
     BASE_DIR

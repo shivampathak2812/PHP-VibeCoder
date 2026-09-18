@@ -85,8 +85,9 @@ class PHPTester:
 
 
 def main():
-    project_dir = (
-        r"D:\PHP-VibeCoder\generated_projects\php-project"
+    project_dir = str(
+        Path(__file__).resolve().parent.parent
+        / "generated_projects" / "php-project"
     )
 
     print("=" * 70)

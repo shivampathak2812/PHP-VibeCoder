@@ -117,9 +117,9 @@ def main():
     print("PHP VibeCoder - Debug Agent Test")
     print("=" * 70)
 
-    file_path = (
-        r"D:\PHP-VibeCoder\generated_projects"
-        r"\php-project\public\index.php"
+    file_path = str(
+        Path(__file__).resolve().parent.parent
+        / "generated_projects" / "php-project" / "public" / "index.php"
     )
 
     error_message = (
