@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- $Revision$ -->
+<refentry xml:id="function.filter-input-array" xmlns="http://docbook.org/ns/docbook" xmlns:xi="http://www.w3.org/2001/XInclude">
+ <refnamediv>
+  <refname>filter_input_array</refname>
+  <refpurpose>Gets external variables and optionally filters them</refpurpose>
+ </refnamediv>
+
+ <refsect1 role="description">
+  &reftitle.description;
+  <methodsynopsis>
+   <type class="union"><type>array</type><type>false</type><type>null</type></type><methodname>filter_input_array</methodname>
+   <methodparam><type>int</type><parameter>type</parameter></methodparam>
+   <methodparam choice="opt"><type class="union"><type>array</type><type>int</type></type><parameter>options</parameter><initializer><constant>FILTER_DEFAULT</constant></initializer></methodparam>
+   <methodparam choice="opt"><type>bool</type><parameter>add_empty</parameter><initializer>&true;</initializer></methodparam>
+  </methodsynopsis>
+  <para>
+   This function is useful for retrieving many values without
+   repetitively calling <function>filter_input</function>.
+  </para>
+ </refsect1>
+
+ <refsect1 role="parameters">
+  &reftitle.parameters;
+  <variablelist>
+   <varlistentry>
+    <term><parameter>type</parameter></term>
+    <listitem>
+     <simpara>
+      One of the <constant>INPUT_<replaceable>*</replaceable></constant> constants.
+     </simpara>
+     <warning>
+      <simpara>
+       The content of the superglobal that is being filtered is the original
+       "raw" content provided by the <acronym>SAPI</acronym>,
+       prior to any user modification to the superglobal.
+       To filter a modified superglobal use
+       <function>filter_var_array</function> instead.
+      </simpara>
+     </warning>
+    </listitem>
+   </varlistentry>
+   <xi:include xpointer="xmlns(db=http://docbook.org/ns/docbook) xpointer(id('function.filter-var-array')/db:refsect1[@role='parameters']//db:varlistentry[db:term[db:parameter[text()='options']]]/.)"/>
+   <xi:include xpointer="xmlns(db=http://docbook.org/ns/docbook) xpointer(id('function.filter-var-array')/db:refsect1[@role='parameters']//db:varlistentry[db:term[db:parameter[text()='add_empty']]]/.)"/>
+  </variablelist>
+ </refsect1>
+
+ <refsect1 role="returnvalues">
+  &reftitle.returnvalues;
+  <simpara>
+   On success, an &array; containing the values of the requested variables.
+  </simpara>
+  <simpara>
+   On failure, &false; is returned.
+   If the input array designated by <parameter>type</parameter> is not
+   populated, &null; is returned instead.
+  </simpara>
+  <simpara>
+   Missing entries from the input array are added to the returned &array; as
+   &null; if <parameter>add_empty</parameter> is &true;,
+   and are omitted entirely if it is &false;.
+   Unlike <function>filter_input</function>,
+   the <constant>FILTER_NULL_ON_FAILURE</constant> flag does not change this:
+   a missing entry is always &null;.
+  </simpara>
+  <simpara>
+   An entry of the returned &array; will be &false; if the filter fails,
+   unless the <constant>FILTER_NULL_ON_FAILURE</constant> flag is used,
+   in which case it will be &null;.
+   With the <constant>FILTER_FORCE_ARRAY</constant> flag,
+   that failure value is wrapped in a one element &array;
+   like any other result.
+  </simpara>
+ </refsect1>
+
+ <refsect1 role="examples">
+  &reftitle.examples;
+  <example>
+   <title>A <function>filter_input_array</function> example</title>
+   <simpara>
+    This example assumes a GET request to
+    <literal>?email=user@example.com&amp;age=twenty&amp;url=https://example.com</literal>.
+    The <literal>age</literal> entry fails because <literal>twenty</literal> is
+    not an integer; a value outside the
+    <literal>1</literal> to <literal>120</literal> range would fail the same way.
+   </simpara>
+   <programlisting role="php">
+<![CDATA[
+<?php
+$filters = [
+    'email' => FILTER_VALIDATE_EMAIL,
+    'age'   => [
+        'filter'  => FILTER_VALIDATE_INT,
+        'options' => ['min_range' => 1, 'max_range' => 120],
+    ],
+    'url'   => FILTER_VALIDATE_URL,
+];
+
+$result = filter_input_array(INPUT_GET, $filters);
+
+var_dump($result);
+?>
+]]>
+   </programlisting>
+   &example.outputs.similar;
+   <screen>
+<![CDATA[
+array(3) {
+  ["email"]=>
+  string(16) "user@example.com"
+  ["age"]=>
+  bool(false)
+  ["url"]=>
+  string(19) "https://example.com"
+}
+]]>
+   </screen>
+  </example>
+  <example>
+   <title>Filtering POST data with <function>filter_input_array</function></title>
+   <simpara>
+    This example assumes a POST request with fields
+    <literal>username=&lt;script&gt;alert&lt;/script&gt;</literal> and
+    <literal>comment=Hello World</literal>.
+    No <literal>missing</literal> field is submitted: because
+    <parameter>add_empty</parameter> defaults to &true;, it is still present in
+    the result, set to &null;.
+   </simpara>
+   <programlisting role="php">
+<![CDATA[
+<?php
+$filters = [
+    'username' => FILTER_SANITIZE_SPECIAL_CHARS,
+    'comment'  => FILTER_SANITIZE_SPECIAL_CHARS,
+    'missing'  => FILTER_VALIDATE_INT,
+];
+
+$result = filter_input_array(INPUT_POST, $filters);
+
+var_dump($result);
+?>
+]]>
+   </programlisting>
+   &example.outputs.similar;
+   <screen>
+<![CDATA[
+array(3) {
+  ["username"]=>
+  string(38) "&#60;script&#62;alert&#60;/script&#62;"
+  ["comment"]=>
+  string(11) "Hello World"
+  ["missing"]=>
+  NULL
+}
+]]>
+   </screen>
+  </example>
+  <example>
+   <title>Requesting an input type that is not populated</title>
+   <simpara>
+    This example assumes a GET request.
+    Because the request carried no POST fields,
+    the input array designated by <constant>INPUT_POST</constant> is not
+    populated and &null; is returned instead of an &array;.
+    This applies to every input type:
+    a request with no query string yields &null; for
+    <constant>INPUT_GET</constant> as well.
+   </simpara>
+   <programlisting role="php">
+<![CDATA[
+<?php
+var_dump(filter_input_array(INPUT_POST, ['a' => FILTER_VALIDATE_INT]));
+?>
+]]>
+   </programlisting>
+   &example.outputs.similar;
+   <screen>
+<![CDATA[
+NULL
+]]>
+   </screen>
+  </example>
+ </refsect1>
+
+ <refsect1 role="notes">
+  &reftitle.notes;
+  <note>
+   <para>
+    There is no <literal>REQUEST_TIME</literal> key in
+    <constant>INPUT_SERVER</constant> array because it is inserted into the
+    <varname>$_SERVER</varname> later.
+   </para>
+  </note>
+ </refsect1>
+
+ <refsect1 role="seealso">
+  &reftitle.seealso;
+  <simplelist>
+   <member><function>filter_input</function></member>
+   <member><function>filter_var</function></member>
+   <member><function>filter_var_array</function></member>
+   <member>
+    Validation filters
+    <constant>FILTER_VALIDATE_<replaceable>*</replaceable></constant>
+   </member>
+   <member>
+    Sanitization filters
+    <constant>FILTER_SANITIZE_<replaceable>*</replaceable></constant>
+   </member>
+  </simplelist>
+ </refsect1>
+
+</refentry>
+<!-- Keep this comment at the end of the file
+Local variables:
+mode: sgml
+sgml-omittag:t
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+indent-tabs-mode:nil
+sgml-parent-document:nil
+sgml-default-dtd-file:"~/.phpdoc/manual.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:nil
+sgml-local-ecat-files:nil
+End:
+vim600: syn=xml fen fdm=syntax fdl=2 si
+vim: et tw=78 syn=sgml
+vi: ts=1 sw=1
+-->

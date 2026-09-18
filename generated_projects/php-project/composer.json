@@ -1,0 +1,17 @@
+{
+    "name": "app/user-api",
+    "description": "PHP 8.x REST API for user registration and login",
+    "type": "project",
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}

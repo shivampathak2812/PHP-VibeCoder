@@ -1,0 +1,236 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- $Revision$ -->
+<refentry xml:id="function.date" xmlns="http://docbook.org/ns/docbook" xmlns:xlink="http://www.w3.org/1999/xlink">
+ <refnamediv>
+  <refname>date</refname>
+  <refpurpose>Format a Unix timestamp</refpurpose>
+ </refnamediv>
+
+ <refsect1 role="description">
+  &reftitle.description;
+  <methodsynopsis>
+   <type>string</type><methodname>date</methodname>
+   <methodparam><type>string</type><parameter>format</parameter></methodparam>
+   <methodparam choice="opt"><type class="union"><type>int</type><type>null</type></type><parameter>timestamp</parameter><initializer>&null;</initializer></methodparam>
+  </methodsynopsis>
+  <para>
+   Returns a string formatted according to the given format string using the
+   given integer <parameter>timestamp</parameter> (Unix timestamp) or the current time
+   if no timestamp is given. In other words, <parameter>timestamp</parameter>
+   is optional and defaults to the value of <function>time</function>.
+  </para>
+  <warning>
+   <para>
+    Unix timestamps do not handle timezones. Use the
+    <classname>DateTimeImmutable</classname> class, and its
+    <methodname>DateTimeInterface::format</methodname> formatting method to
+    format date/time information with a timezone attached.
+   </para>
+  </warning>
+ </refsect1>
+
+ <refsect1 role="parameters">
+  &reftitle.parameters;
+  <variablelist>
+   <varlistentry>
+    <term><parameter>format</parameter></term>
+    <listitem>
+     <para>
+      Format accepted by <methodname>DateTimeInterface::format</methodname>.
+     </para>
+      <note>
+       <simpara>
+        <function>date</function> will always generate
+        <literal>000000</literal> as microseconds since it takes an <type>int</type>
+        parameter, whereas <methodname>DateTimeInterface::format</methodname> does
+        support microseconds if an object of type
+        <interfacename>DateTimeInterface</interfacename> was created with microseconds.
+       </simpara>
+      </note>
+    </listitem>
+   </varlistentry>
+
+   &date.timestamp.description;
+
+  </variablelist>
+ </refsect1>
+
+ <refsect1 role="returnvalues">
+  &reftitle.returnvalues;
+  <para>
+   Returns a formatted date string.
+  </para>
+ </refsect1>
+
+ <refsect1 role="errors">
+  &reftitle.errors;
+
+   &date.timezone.errors.description;
+
+ </refsect1>
+
+ <refsect1 role="changelog">
+  &reftitle.changelog;
+  <para>
+   <informaltable>
+    <tgroup cols="2">
+     <thead>
+      <row>
+       <entry>&Version;</entry>
+       <entry>&Description;</entry>
+      </row>
+     </thead>
+     <tbody>
+      <row>
+       <entry>8.0.0</entry>
+       <entry>
+        <parameter>timestamp</parameter> is nullable now.
+       </entry>
+      </row>
+     </tbody>
+    </tgroup>
+   </informaltable>
+  </para>
+ </refsect1>
+
+ <refsect1 role="examples">
+  &reftitle.examples;
+  <para>
+   <example>
+    <title><function>date</function> examples</title>
+    <programlisting role="php">
+<![CDATA[
+<?php
+// set the default timezone to use.
+date_default_timezone_set('UTC');
+
+
+// Prints something like: Monday
+echo date("l") . "\n";
+
+// Prints something like: Monday 8th of August 2005 03:12:46 PM
+echo date('l jS \of F Y h:i:s A') . "\n";
+
+// Prints: July 1, 2000 is on a Saturday
+echo "July 1, 2000 is on a " . date("l", mktime(0, 0, 0, 7, 1, 2000)) . "\n";
+
+/* use the constants in the format parameter */
+// prints something like: Wed, 25 Sep 2013 15:28:57 -0700
+echo date(DATE_RFC2822) . "\n";
+
+// prints something like: 2000-07-01T00:00:00+00:00
+echo date(DATE_ATOM, mktime(0, 0, 0, 7, 1, 2000));
+]]>
+    </programlisting>
+   </example>
+  </para>
+  <para>
+   You can prevent a recognized character in the format string from being
+   expanded by escaping it with a preceding backslash. If the character with
+   a backslash is already a special sequence, you may need to also escape
+   the backslash.
+   <example>
+    <title>Escaping characters in <function>date</function></title>
+    <programlisting role="php">
+<![CDATA[
+<?php
+// prints something like: Wednesday the 15th
+echo date('l \t\h\e jS');
+]]>
+    </programlisting>
+   </example>
+  </para>
+  <para>
+   Some examples of <function>date</function> formatting. Note that
+   you should escape any other characters, as any which currently
+   have a special meaning will produce undesirable results, and
+   other characters may be assigned meaning in future PHP versions.
+   When escaping, be sure to use single quotes to prevent characters
+   like \n from becoming newlines.
+   <example>
+    <title><function>date</function> Formatting</title>
+    <programlisting role="php">
+<![CDATA[
+<?php
+// Assuming today is March 10th, 2001, 5:16:18 pm, and that we are in the
+// Mountain Standard Time (MST) Time Zone
+date_default_timezone_set("America/Phoenix");
+
+echo date("F j, Y, g:i a") . "\n";                 // March 10, 2001, 5:16 pm
+echo date("m.d.y") . "\n";                         // 03.10.01
+echo date("j, n, Y") . "\n";                       // 10, 3, 2001
+echo date("Ymd") . "\n";                           // 20010310
+echo date('h-i-s, j-m-y, it is w Day') . "\n";     // 05-16-18, 10-03-01, 1631 1618 6 Satpm01
+echo date('\i\t \i\s \t\h\e jS \d\a\y.') . "\n";   // it is the 10th day.
+echo date("D M j G:i:s T Y") . "\n";               // Sat Mar 10 17:16:18 MST 2001
+echo date('H:m:s \m \i\s\ \m\o\n\t\h') . "\n";     // 17:03:18 m is month
+echo date("H:i:s") . "\n";                         // 17:16:18
+echo date("Y-m-d H:i:s") . "\n";                   // 2001-03-10 17:16:18 (the MySQL DATETIME format)
+]]>
+    </programlisting>
+   </example>
+  </para>
+  <para>
+   To format dates in other languages,
+   <methodname>IntlDateFormatter::format</methodname>
+   can be used instead of <function>date</function>.
+  </para>
+ </refsect1>
+
+ <refsect1 role="notes">
+  &reftitle.notes;
+  <note>
+   <para>
+    To generate a timestamp from a string representation of the date, you
+    may be able to use <function>strtotime</function>. Additionally, some
+    databases have functions to convert their date formats into timestamps
+    (such as MySQL's <link xlink:href="&url.mysql.docs.date;">UNIX_TIMESTAMP</link>
+    function).
+   </para>
+  </note>
+  <tip>
+   <para>
+    Timestamp of the start of the request is available in
+    <varname>$_SERVER['REQUEST_TIME']</varname>.
+   </para>
+  </tip>
+ </refsect1>
+
+ <refsect1 role="seealso">
+  &reftitle.seealso;
+  <para>
+   <simplelist>
+    <member><methodname>DateTimeImmutable::__construct</methodname></member>
+    <member><methodname>DateTimeInterface::format</methodname></member>
+    <member><function>gmdate</function></member>
+    <member><function>idate</function></member>
+    <member><function>getdate</function></member>
+    <member><function>getlastmod</function></member>
+    <member><function>mktime</function></member>
+    <member><methodname>IntlDateFormatter::format</methodname></member>
+    <member><function>time</function></member>
+    <member><link linkend="datetimeinterface.constants.types">Predefined DateTime Constants</link></member>
+   </simplelist>
+  </para>
+ </refsect1>
+</refentry>
+<!-- Keep this comment at the end of the file
+Local variables:
+mode: sgml
+sgml-omittag:t
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+indent-tabs-mode:nil
+sgml-parent-document:nil
+sgml-default-dtd-file:"~/.phpdoc/manual.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:nil
+sgml-local-ecat-files:nil
+End:
+vim600: syn=xml fen fdm=syntax fdl=2 si
+vim: et tw=78 syn=sgml
+vi: ts=1 sw=1
+-->

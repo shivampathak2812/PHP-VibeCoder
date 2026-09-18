@@ -1,0 +1,22 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+
+# Python environments and generated cache files
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local application data
+uploaded_files/*
+*.log
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

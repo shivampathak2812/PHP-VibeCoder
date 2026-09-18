@@ -1,0 +1,1437 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- $Revision$ -->
+<chapter xmlns="http://docbook.org/ns/docbook" xmlns:xlink="http://www.w3.org/1999/xlink" xml:id="mysqlnd.plugin">
+ <title>MySQL Native Driver Plugin API</title>
+ <simpara>
+  The MySQL Native Driver Plugin API is a feature of MySQL Native
+  Driver, or <literal>mysqlnd</literal>. <literal>Mysqlnd</literal>
+  plugins operate in the layer between PHP applications and the MySQL
+  server. This is comparable to MySQL Proxy. MySQL Proxy operates on a
+  layer between any MySQL client application, for example, a PHP
+  application and, the MySQL server. <literal>Mysqlnd</literal> plugins
+  can undertake typical MySQL Proxy tasks such as load balancing,
+  monitoring and performance optimizations. Due to the different
+  architecture and location, <literal>mysqlnd</literal> plugins do not
+  have some of MySQL Proxy's disadvantages. For example, with plugins,
+  there is no single point of failure, no dedicated proxy server to
+  deploy, and no new programming language to learn (Lua).
+ </simpara>
+ <simpara>
+  A <literal>mysqlnd</literal> plugin can be thought of as an extension
+  to <literal>mysqlnd</literal>. Plugins can intercept the majority of
+  <literal>mysqlnd</literal> functions. The <literal>mysqlnd</literal>
+  functions are called by the PHP MySQL extensions such as
+  <literal>ext/mysql</literal>, <literal>ext/mysqli</literal>, and
+  <literal>PDO_MYSQL</literal>. As a result, it is possible for a
+  <literal>mysqlnd</literal> plugin to intercept all calls made to these
+  extensions from the client application.
+ </simpara>
+ <simpara>
+  Internal <literal>mysqlnd</literal> function calls can also be
+  intercepted, or replaced. There are no restrictions on manipulating
+  <literal>mysqlnd</literal> internal function tables. It is possible to
+  set things up so that when certain <literal>mysqlnd</literal>
+  functions are called by the extensions that use
+  <literal>mysqlnd</literal>, the call is directed to the appropriate
+  function in the <literal>mysqlnd</literal> plugin. The ability to
+  manipulate <literal>mysqlnd</literal> internal function tables in this
+  way allows maximum flexibility for plugins.
+ </simpara>
+ <simpara>
+  <literal>Mysqlnd</literal> plugins are in fact PHP Extensions, written
+  in C, that use the <literal>mysqlnd</literal> plugin API (which is
+  built into MySQL Native Driver, <literal>mysqlnd</literal>). Plugins
+  can be made 100% transparent to PHP applications. No application
+  changes are needed because plugins operate on a different layer. The
+  <literal>mysqlnd</literal> plugin can be thought of as operating in a
+  layer below <literal>mysqlnd</literal>.
+ </simpara>
+ <simpara>
+  The following list represents some possible applications of
+  <literal>mysqlnd</literal> plugins.
+ </simpara>
+ <itemizedlist>
+  <listitem>
+   <simpara>
+    Load Balancing
+   </simpara>
+   <itemizedlist>
+    <listitem>
+     <simpara>
+      Read/Write Splitting. An example of this is the PECL/mysqlnd_ms
+      (Master Slave) extension. This extension splits read/write queries
+      for a replication setup.
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Failover
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Round-Robin, least loaded
+     </simpara>
+    </listitem>
+   </itemizedlist>
+  </listitem>
+  <listitem>
+   <simpara>
+    Monitoring
+   </simpara>
+   <itemizedlist>
+    <listitem>
+     <simpara>
+      Query Logging
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Query Analysis
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Query Auditing. An example of this is the PECL/mysqlnd_sip (SQL
+      Injection Protection) extension. This extension inspects queries
+      and executes only those that are allowed according to a ruleset.
+     </simpara>
+    </listitem>
+   </itemizedlist>
+  </listitem>
+  <listitem>
+   <simpara>
+    Performance
+   </simpara>
+   <itemizedlist>
+    <listitem>
+     <simpara>
+      Caching. An example of this is the PECL/mysqlnd_qc (Query Cache)
+      extension.
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Throttling
+     </simpara>
+    </listitem>
+    <listitem>
+     <simpara>
+      Sharding. An example of this is the PECL/mysqlnd_mc (Multi
+      Connect) extension. This extension will attempt to split a SELECT
+      statement into n-parts, using SELECT ... LIMIT part_1, SELECT
+      LIMIT part_n. It sends the queries to distinct MySQL servers and
+      merges the result at the client.
+     </simpara>
+    </listitem>
+   </itemizedlist>
+  </listitem>
+ </itemizedlist>
+ <simpara>
+  <emphasis role="bold">MySQL Native Driver Plugins Available</emphasis>
+ </simpara>
+ <simpara>
+  There are a number of mysqlnd plugins already available. These
+  include:
+ </simpara>
+ <itemizedlist>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_mc</emphasis> - Multi Connect
+    plugin.
+   </simpara>
+  </listitem>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_ms</emphasis> - Master Slave
+    plugin.
+   </simpara>
+  </listitem>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_qc</emphasis> - Query Cache
+    plugin.
+   </simpara>
+  </listitem>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_pscache</emphasis> - Prepared
+    Statement Handle Cache plugin.
+   </simpara>
+  </listitem>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_sip</emphasis> - SQL Injection
+    Protection plugin.
+   </simpara>
+  </listitem>
+  <listitem>
+   <simpara>
+    <emphasis role="bold">PECL/mysqlnd_uh</emphasis> - User Handler
+    plugin.
+   </simpara>
+  </listitem>
+ </itemizedlist>
+ <section xml:id="mysqlnd.plugin.mysql-proxy">
+  <title>A comparison of mysqlnd plugins with MySQL Proxy</title>
+  <simpara>
+   <literal>Mysqlnd</literal> plugins and MySQL Proxy are different
+   technologies using different approaches. Both are valid tools for
+   solving a variety of common tasks such as load balancing, monitoring,
+   and performance enhancements. An important difference is that MySQL
+   Proxy works with all MySQL clients, whereas
+   <literal>mysqlnd</literal> plugins are specific to PHP applications.
+  </simpara>
+  <simpara>
+   As a PHP Extension, a <literal>mysqlnd</literal> plugin gets
+   installed on the PHP application server, along with the rest of PHP.
+   MySQL Proxy can either be run on the PHP application server or can be
+   installed on a dedicated machine to handle multiple PHP application
+   servers.
+  </simpara>
+  <simpara>
+   Deploying MySQL Proxy on the application server has two advantages:
+  </simpara>
+  <orderedlist>
+   <listitem>
+    <simpara>
+     No single point of failure
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Easy to scale out (horizontal scale out, scale by client)
+    </simpara>
+   </listitem>
+  </orderedlist>
+  <simpara>
+   MySQL Proxy (and <literal>mysqlnd</literal> plugins) can solve
+   problems easily which otherwise would have required changes to
+   existing applications.
+  </simpara>
+  <simpara>
+   However, MySQL Proxy does have some disadvantages:
+  </simpara>
+  <itemizedlist>
+   <listitem>
+    <simpara>
+     MySQL Proxy is a new component and technology to master and deploy.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     MySQL Proxy requires knowledge of the Lua scripting language.
+    </simpara>
+   </listitem>
+  </itemizedlist>
+  <simpara>
+   MySQL Proxy can be customized with C and Lua programming. Lua is the
+   preferred scripting language of MySQL Proxy. For most PHP experts Lua
+   is a new language to learn. A <literal>mysqlnd</literal> plugin can
+   be written in C. It is also possible to write plugins in PHP using
+   <link xlink:href="&url.pecl.package;mysqlnd_uh">PECL/mysqlnd_uh</link>.
+  </simpara>
+  <simpara>
+   MySQL Proxy runs as a daemon - a background process. MySQL Proxy can
+   recall earlier decisions, as all state can be retained. However, a
+   <literal>mysqlnd</literal> plugin is bound to the request-based
+   lifecycle of PHP. MySQL Proxy can also share one-time computed
+   results among multiple application servers. A
+   <literal>mysqlnd</literal> plugin would need to store data in a
+   persistent medium to be able to do this. Another daemon would need to
+   be used for this purpose, such as Memcache. This gives MySQL Proxy an
+   advantage in this case.
+  </simpara>
+  <simpara>
+   MySQL Proxy works on top of the wire protocol. With MySQL Proxy you
+   have to parse and reverse engineer the MySQL Client Server Protocol.
+   Actions are limited to those that can be achieved by manipulating the
+   communication protocol. If the wire protocol changes (which happens
+   very rarely) MySQL Proxy scripts would need to be changed as well.
+  </simpara>
+  <simpara>
+   <literal>Mysqlnd</literal> plugins work on top of the C API, which
+   mirrors the <literal>libmysqlclient</literal> client.
+   This C API is basically a wrapper around the MySQL Client Server
+   protocol, or wire protocol, as it is sometimes called. You can
+   intercept all C API calls. PHP makes use of the C API, therefore you
+   can hook all PHP calls, without the need to program at the level of
+   the wire protocol.
+  </simpara>
+  <simpara>
+   <literal>Mysqlnd</literal> implements the wire protocol. Plugins can
+   therefore parse, reverse engineer, manipulate and even replace the
+   communication protocol. However, this is usually not required.
+  </simpara>
+  <simpara>
+   As plugins allow you to create implementations that use two levels (C
+   API and wire protocol), they have greater flexibility than MySQL
+   Proxy. If a <literal>mysqlnd</literal> plugin is implemented using
+   the C API, any subsequent changes to the wire protocol do not require
+   changes to the plugin itself.
+  </simpara>
+ </section>
+ <section xml:id="mysqlnd.plugin.obtaining">
+  <title>Obtaining the mysqlnd plugin API</title>
+  <simpara>
+   The <literal>mysqlnd</literal> plugin API is simply part of the MySQL
+   Native Driver PHP extension, <literal>ext/mysqlnd</literal>.
+   Development started on the <literal>mysqlnd</literal> plugin API in
+   December 2009. It is developed as part of the PHP source repository,
+   and as such is available to the public either via Git, or through
+   source snapshot downloads.
+  </simpara>
+  <simpara>
+   Plugin developers can determine the <literal>mysqlnd</literal>
+   version through accessing <literal>MYSQLND_VERSION</literal>, which
+   is a string of the format <quote>mysqlnd 8.3.17</quote>, or through
+   <literal>MYSQLND_VERSION_ID</literal>, which is an integer such as
+   50007. Developers can calculate the version number as follows:
+  </simpara>
+  <table xml:id="mysqlnd.plugin.version-id">
+   <title>MYSQLND_VERSION_ID calculation table</title>
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Version (part)</entry>
+      <entry>Example</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>Major*10000</entry>
+      <entry>5*10000 = 50000</entry>
+     </row>
+     <row>
+      <entry>Minor*100</entry>
+      <entry>0*100 = 0</entry>
+     </row>
+     <row>
+      <entry>Patch</entry>
+      <entry>7 = 7</entry>
+     </row>
+     <row>
+      <entry>MYSQLND_VERSION_ID</entry>
+      <entry>50007</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   During development, developers should refer to the
+   <literal>mysqlnd</literal> version number for compatibility and
+   version tests, as several iterations of <literal>mysqlnd</literal>
+   could occur during the lifetime of a PHP development branch with a
+   single PHP version number.
+  </simpara>
+ </section>
+ <section xml:id="mysqlnd.plugin.architecture">
+  <title>MySQL Native Driver Plugin Architecture</title>
+  <simpara>
+   This section provides an overview of the <literal>mysqlnd</literal>
+   plugin architecture.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">MySQL Native Driver Overview</emphasis>
+  </simpara>
+  <simpara>
+   Before developing <literal>mysqlnd</literal> plugins, it is useful to
+   know a little of how <literal>mysqlnd</literal> itself is organized.
+   <literal>Mysqlnd</literal> consists of the following modules:
+  </simpara>
+  <table xml:id="mysqlnd.plugin.orgchart">
+   <title>The mysqlnd organization chart, per module</title>
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Modules Statistics</entry>
+      <entry>mysqlnd_statistics.c</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>Connection</entry>
+      <entry>mysqlnd.c</entry>
+     </row>
+     <row>
+      <entry>Resultset</entry>
+      <entry>mysqlnd_result.c</entry>
+     </row>
+     <row>
+      <entry>Resultset Metadata</entry>
+      <entry>mysqlnd_result_meta.c</entry>
+     </row>
+     <row>
+      <entry>Statement</entry>
+      <entry>mysqlnd_ps.c</entry>
+     </row>
+     <row>
+      <entry>Network</entry>
+      <entry>mysqlnd_net.c</entry>
+     </row>
+     <row>
+      <entry>Wire protocol</entry>
+      <entry>mysqlnd_wireprotocol.c</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   <emphasis role="bold">C Object-Oriented Paradigm</emphasis>
+  </simpara>
+  <simpara>
+   At the code level, <literal>mysqlnd</literal> uses a C pattern for
+   implementing object orientation.
+  </simpara>
+  <simpara>
+   In C you use a <literal>struct</literal> to represent an object.
+   Members of the struct represent object properties. Struct members
+   pointing to functions represent methods.
+  </simpara>
+  <simpara>
+   Unlike with other languages such as C++ or Java, there are no fixed
+   rules on inheritance in the C object-oriented paradigm. However,
+   there are some conventions that need to be followed that will be
+   discussed later.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">The PHP Life Cycle</emphasis>
+  </simpara>
+  <simpara>
+   When considering the PHP life cycle there are two basic cycles:
+  </simpara>
+  <itemizedlist>
+   <listitem>
+    <simpara>
+     PHP engine startup and shutdown cycle
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Request cycle
+    </simpara>
+   </listitem>
+  </itemizedlist>
+  <simpara>
+   When the PHP engine starts up it will call the module initialization
+   (MINIT) function of each registered extension. This allows each
+   module to setup variables and allocate resources that will exist for
+   the lifetime of the PHP engine process. When the PHP engine shuts
+   down it will call the module shutdown (MSHUTDOWN) function of each
+   extension.
+  </simpara>
+  <simpara>
+   During the lifetime of the PHP engine it will receive a number of
+   requests. Each request constitutes another life cycle. On each
+   request the PHP engine will call the request initialization function
+   of each extension. The extension can perform any variable setup and
+   resource allocation required for request processing. As the request
+   cycle ends the engine calls the request shutdown (RSHUTDOWN) function
+   of each extension so the extension can perform any cleanup required.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">How a plugin works</emphasis>
+  </simpara>
+  <simpara>
+   A <literal>mysqlnd</literal> plugin works by intercepting calls made
+   to <literal>mysqlnd</literal> by extensions that use
+   <literal>mysqlnd</literal>. This is achieved by obtaining the
+   <literal>mysqlnd</literal> function table, backing it up, and
+   replacing it by a custom function table, which calls the functions of
+   the plugin as required.
+  </simpara>
+  <simpara>
+   The following code shows how the <literal>mysqlnd</literal> function
+   table is replaced:
+  </simpara>
+<programlisting>
+<![CDATA[
+/* a place to store original function table */
+struct st_mysqlnd_conn_methods org_methods;
+
+void minit_register_hooks(TSRMLS_D) {
+  /* active function table */
+  struct st_mysqlnd_conn_methods * current_methods
+    = mysqlnd_conn_get_methods();
+
+  /* backup original function table */
+  memcpy(&org_methods, current_methods,
+    sizeof(struct st_mysqlnd_conn_methods);
+
+  /* install new methods */
+  current_methods->query = MYSQLND_METHOD(my_conn_class, query);
+}
+]]>
+</programlisting>
+  <simpara>
+   Connection function table manipulations must be done during Module
+   Initialization (MINIT). The function table is a global shared
+   resource. In an multi-threaded environment, with a TSRM build, the
+   manipulation of a global shared resource during the request
+   processing will almost certainly result in conflicts.
+  </simpara>
+  <note>
+   <simpara>
+    Do not use any fixed-size logic when manipulating the
+    <literal>mysqlnd</literal> function table: new methods may be added
+    at the end of the function table. The function table may change at
+    any time in the future.
+   </simpara>
+  </note>
+  <simpara>
+   <emphasis role="bold">Calling parent methods</emphasis>
+  </simpara>
+  <simpara>
+   If the original function table entries are backed up, it is still
+   possible to call the original function table entries - the parent
+   methods.
+  </simpara>
+  <simpara>
+   In some cases, such as for
+   <literal>Connection::stmt_init()</literal>, it is vital to call the
+   parent method prior to any other activity in the derived method.
+  </simpara>
+<programlisting>
+<![CDATA[
+MYSQLND_METHOD(my_conn_class, query)(MYSQLND *conn,
+  const char *query, unsigned int query_len TSRMLS_DC) {
+
+  php_printf("my_conn_class::query(query = %s)\n", query);
+
+  query = "SELECT 'query rewritten' FROM DUAL";
+  query_len = strlen(query);
+
+  return org_methods.query(conn, query, query_len); /* return with call to parent */
+}
+]]>
+</programlisting>
+  <simpara>
+   <emphasis role="bold">Extending properties</emphasis>
+  </simpara>
+  <simpara>
+   A <literal>mysqlnd</literal> object is represented by a C struct. It
+   is not possible to add a member to a C struct at run time. Users of
+   <literal>mysqlnd</literal> objects cannot simply add properties to
+   the objects.
+  </simpara>
+  <simpara>
+   Arbitrary data (properties) can be added to a
+   <literal>mysqlnd</literal> objects using an appropriate function of
+   the
+   <literal>mysqlnd_plugin_get_plugin_&lt;object&gt;_data()</literal>
+   family. When allocating an object <literal>mysqlnd</literal> reserves
+   space at the end of the object to hold a <literal>void *</literal>
+   pointer to arbitrary data. <literal>mysqlnd</literal> reserves space
+   for one <literal>void *</literal> pointer per plugin.
+  </simpara>
+  <simpara>
+   The following table shows how to calculate the position of the
+   pointer for a specific plugin:
+  </simpara>
+  <table xml:id="mysqlnd.plugin.pointercalc">
+   <title>Pointer calculations for mysqlnd</title>
+   <tgroup cols="2">
+    <thead>
+     <row>
+      <entry>Memory address</entry>
+      <entry>Contents</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>0</entry>
+      <entry>Beginning of the mysqlnd object C struct</entry>
+     </row>
+     <row>
+      <entry>n</entry>
+      <entry>End of the mysqlnd object C struct</entry>
+     </row>
+     <row>
+      <entry>n + (m x sizeof(void*))</entry>
+      <entry>void* to object data of the m-th plugin</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   If you plan to subclass any of the <literal>mysqlnd</literal> object
+   constructors, which is allowed, you must keep this in mind!
+  </simpara>
+  <simpara>
+   The following code shows extending properties:
+  </simpara>
+<programlisting>
+<![CDATA[
+/* any data we want to associate */
+typedef struct my_conn_properties {
+  unsigned long query_counter;
+} MY_CONN_PROPERTIES;
+
+/* plugin id */
+unsigned int my_plugin_id;
+
+void minit_register_hooks(TSRMLS_D) {
+  /* obtain unique plugin ID */
+  my_plugin_id = mysqlnd_plugin_register();
+  /* snip - see Extending Connection: methods */
+}
+
+static MY_CONN_PROPERTIES** get_conn_properties(const MYSQLND *conn TSRMLS_DC) {
+  MY_CONN_PROPERTIES** props;
+  props = (MY_CONN_PROPERTIES**)mysqlnd_plugin_get_plugin_connection_data(
+    conn, my_plugin_id);
+  if (!props || !(*props)) {
+    *props = mnd_pecalloc(1, sizeof(MY_CONN_PROPERTIES), conn->persistent);
+    (*props)->query_counter = 0;
+  }
+  return props;
+}
+]]>
+</programlisting>
+  <simpara>
+   The plugin developer is responsible for the management of plugin data
+   memory.
+  </simpara>
+  <simpara>
+   Use of the <literal>mysqlnd</literal> memory allocator is recommended
+   for plugin data. These functions are named using the convention:
+   <literal>mnd_*loc()</literal>. The <literal>mysqlnd</literal>
+   allocator has some useful features, such as the ability to use a
+   debug allocator in a non-debug build.
+  </simpara>
+  <table xml:id="mysqlnd.plugin.subclass">
+   <title>When and how to subclass</title>
+   <tgroup cols="4">
+    <thead>
+     <row>
+      <entry/>
+      <entry>When to subclass?</entry>
+      <entry>Each instance has its own private function table?</entry>
+      <entry>How to subclass?</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>Connection (MYSQLND)</entry>
+      <entry>MINIT</entry>
+      <entry>No</entry>
+      <entry>mysqlnd_conn_get_methods()</entry>
+     </row>
+     <row>
+      <entry>Resultset (MYSQLND_RES)</entry>
+      <entry>MINIT or later</entry>
+      <entry>Yes</entry>
+      <entry>mysqlnd_result_get_methods() or object method function table
+       manipulation</entry>
+     </row>
+     <row>
+      <entry>Resultset Meta (MYSQLND_RES_METADATA)</entry>
+      <entry>MINIT</entry>
+      <entry>No</entry>
+      <entry>mysqlnd_result_metadata_get_methods()</entry>
+     </row>
+     <row>
+      <entry>Statement (MYSQLND_STMT)</entry>
+      <entry>MINIT</entry>
+      <entry>No</entry>
+      <entry>mysqlnd_stmt_get_methods()</entry>
+     </row>
+     <row>
+      <entry>Network (MYSQLND_NET)</entry>
+      <entry>MINIT or later</entry>
+      <entry>Yes</entry>
+      <entry>mysqlnd_net_get_methods() or object method function table manipulation</entry>
+     </row>
+     <row>
+      <entry>Wire protocol (MYSQLND_PROTOCOL)</entry>
+      <entry>MINIT or later</entry>
+      <entry>Yes</entry>
+      <entry>mysqlnd_protocol_get_methods() or object method function table
+       manipulation</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   You must not manipulate function tables at any time later than MINIT
+   if it is not allowed according to the above table.
+  </simpara>
+  <simpara>
+   Some classes contain a pointer to the method function table. All
+   instances of such a class will share the same function table. To
+   avoid chaos, in particular in threaded environments, such function
+   tables must only be manipulated during MINIT.
+  </simpara>
+  <simpara>
+   Other classes use copies of a globally shared function table. The
+   class function table copy is created together with the object. Each
+   object uses its own function table. This gives you two options: you
+   can manipulate the default function table of an object at MINIT, and
+   you can additionally refine methods of an object without impacting
+   other instances of the same class.
+  </simpara>
+  <simpara>
+   The advantage of the shared function table approach is performance.
+   There is no need to copy a function table for each and every object.
+  </simpara>
+  <table xml:id="mysqlnd.plugin.constatus">
+   <title>Constructor status</title>
+   <tgroup cols="4">
+    <thead>
+     <row>
+      <entry>Type</entry>
+      <entry>Allocation, construction, reset</entry>
+      <entry>Can be modified?</entry>
+      <entry>Caller</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>Connection (MYSQLND)</entry>
+      <entry>mysqlnd_init()</entry>
+      <entry>No</entry>
+      <entry>mysqlnd_connect()</entry>
+     </row>
+     <row>
+      <entry>Resultset(MYSQLND_RES)</entry>
+      <entry><simpara>
+        Allocation:
+       </simpara>
+       <itemizedlist>
+        <listitem>
+         <simpara>
+          Connection::result_init()
+         </simpara>
+        </listitem>
+       </itemizedlist>
+       <simpara>
+        Reset and re-initialized during:
+       </simpara>
+       <itemizedlist>
+        <listitem>
+         <simpara>
+          Result::use_result()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          Result::store_result
+         </simpara>
+        </listitem>
+       </itemizedlist></entry>
+      <entry>Yes, but call parent!</entry>
+      <entry><itemizedlist>
+        <listitem>
+         <simpara>
+          Connection::list_fields()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          Statement::get_result()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          Statement::prepare() (Metadata only)
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          Statement::resultMetaData()
+         </simpara>
+        </listitem>
+       </itemizedlist></entry>
+     </row>
+     <row>
+      <entry>Resultset Meta (MYSQLND_RES_METADATA)</entry>
+      <entry>Connection::result_meta_init()</entry>
+      <entry>Yes, but call parent!</entry>
+      <entry>Result::read_result_metadata()</entry>
+     </row>
+     <row>
+      <entry>Statement (MYSQLND_STMT)</entry>
+      <entry>Connection::stmt_init()</entry>
+      <entry>Yes, but call parent!</entry>
+      <entry>Connection::stmt_init()</entry>
+     </row>
+     <row>
+      <entry>Network (MYSQLND_NET)</entry>
+      <entry>mysqlnd_net_init()</entry>
+      <entry>No</entry>
+      <entry>Connection::init()</entry>
+     </row>
+     <row>
+      <entry>Wire protocol (MYSQLND_PROTOCOL)</entry>
+      <entry>mysqlnd_protocol_init()</entry>
+      <entry>No</entry>
+      <entry>Connection::init()</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   It is strongly recommended that you do not entirely replace a
+   constructor. The constructors perform memory allocations. The memory
+   allocations are vital for the <literal>mysqlnd</literal> plugin API
+   and the object logic of <literal>mysqlnd</literal>. If you do not
+   care about warnings and insist on hooking the constructors, you
+   should at least call the parent constructor before doing anything in
+   your constructor.
+  </simpara>
+  <simpara>
+   Regardless of all warnings, it can be useful to subclass
+   constructors. Constructors are the perfect place for modifying the
+   function tables of objects with non-shared object tables, such as
+   Resultset, Network, Wire Protocol.
+  </simpara>
+  <table xml:id="mysqlnd.plugin.deststatus">
+   <title>Destruction status</title>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Type</entry>
+      <entry>Derived method must call parent?</entry>
+      <entry>Destructor</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>Connection</entry>
+      <entry>yes, after method execution</entry>
+      <entry>free_contents(), end_psession()</entry>
+     </row>
+     <row>
+      <entry>Resultset</entry>
+      <entry>yes, after method execution</entry>
+      <entry>free_result()</entry>
+     </row>
+     <row>
+      <entry>Resultset Meta</entry>
+      <entry>yes, after method execution</entry>
+      <entry>free()</entry>
+     </row>
+     <row>
+      <entry>Statement</entry>
+      <entry>yes, after method execution</entry>
+      <entry>dtor(), free_stmt_content()</entry>
+     </row>
+     <row>
+      <entry>Network</entry>
+      <entry>yes, after method execution</entry>
+      <entry>free()</entry>
+     </row>
+     <row>
+      <entry>Wire protocol</entry>
+      <entry>yes, after method execution</entry>
+      <entry>free()</entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   The destructors are the appropriate place to free properties,
+   <literal>mysqlnd_plugin_get_plugin_<replaceable>&lt;object&gt;</replaceable>_data()</literal>.
+  </simpara>
+  <simpara>
+   The listed destructors may not be equivalent to the actual
+   <literal>mysqlnd</literal> method freeing the object itself. However,
+   they are the best possible place for you to hook in and free your
+   plugin data. As with constructors you may replace the methods
+   entirely but this is not recommended. If multiple methods are listed
+   in the above table you will need to hook all of the listed methods
+   and free your plugin data in whichever method is called first by
+   <literal>mysqlnd</literal>.
+  </simpara>
+  <simpara>
+   The recommended method for plugins is to simply hook the methods,
+   free your memory and call the parent implementation immediately
+   following this.
+  </simpara>
+ </section>
+ <section xml:id="mysqlnd.plugin.api">
+  <title>The mysqlnd plugin API</title>
+  <simpara>
+   The following is a list of functions provided in the
+   <literal>mysqlnd</literal> plugin API:
+  </simpara>
+  <itemizedlist>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_register()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_count()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_get_plugin_connection_data()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_get_plugin_result_data()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_get_plugin_stmt_data()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_get_plugin_net_data()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_plugin_get_plugin_protocol_data()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_conn_get_methods()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_result_get_methods()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_result_meta_get_methods()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_stmt_get_methods()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_net_get_methods()
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     mysqlnd_protocol_get_methods()
+    </simpara>
+   </listitem>
+  </itemizedlist>
+  <simpara>
+   There is no formal definition of what a plugin is and how a plugin
+   mechanism works.
+  </simpara>
+  <simpara>
+   Components often found in plugins mechanisms are:
+  </simpara>
+  <itemizedlist>
+   <listitem>
+    <simpara>
+     A plugin manager
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     A plugin API
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Application services (or modules)
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Application service APIs (or module APIs)
+    </simpara>
+   </listitem>
+  </itemizedlist>
+  <simpara>
+   The <literal>mysqlnd</literal> plugin concept employs these features,
+   and additionally enjoys an open architecture.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">No Restrictions</emphasis>
+  </simpara>
+  <simpara>
+   A plugin has full access to the inner workings of
+   <literal>mysqlnd</literal>. There are no security limits or
+   restrictions. Everything can be overwritten to implement friendly or
+   hostile algorithms. It is recommended you only deploy plugins from a
+   trusted source.
+  </simpara>
+  <simpara>
+   As discussed previously, plugins can use pointers freely. These
+   pointers are not restricted in any way, and can point into another
+   plugin's data. Simple offset arithmetic can be used to read another
+   plugin's data.
+  </simpara>
+  <simpara>
+   It is recommended that you write cooperative plugins, and that you
+   always call the parent method. The plugins should always cooperate
+   with <literal>mysqlnd</literal> itself.
+  </simpara>
+  <table xml:id="mysqlnd.plugin.chaining">
+   <title>Issues: an example of chaining and cooperation</title>
+   <tgroup cols="3">
+    <thead>
+     <row>
+      <entry>Extension</entry>
+      <entry>mysqlnd.query() pointer</entry>
+      <entry>call stack if calling parent</entry>
+     </row>
+    </thead>
+    <tbody>
+     <row>
+      <entry>ext/mysqlnd</entry>
+      <entry>mysqlnd.query()</entry>
+      <entry>mysqlnd.query</entry>
+     </row>
+     <row>
+      <entry>ext/mysqlnd_cache</entry>
+      <entry>mysqlnd_cache.query()</entry>
+      <entry><orderedlist>
+        <listitem>
+         <simpara>
+          mysqlnd_cache.query()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          mysqlnd.query
+         </simpara>
+        </listitem>
+       </orderedlist></entry>
+     </row>
+     <row>
+      <entry>ext/mysqlnd_monitor</entry>
+      <entry>mysqlnd_monitor.query()</entry>
+      <entry><orderedlist>
+        <listitem>
+         <simpara>
+          mysqlnd_monitor.query()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          mysqlnd_cache.query()
+         </simpara>
+        </listitem>
+        <listitem>
+         <simpara>
+          mysqlnd.query
+         </simpara>
+        </listitem>
+       </orderedlist></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+  <simpara>
+   In this scenario, a cache (<literal>ext/mysqlnd_cache</literal>) and
+   a monitor (<literal>ext/mysqlnd_monitor</literal>) plugin are loaded.
+   Both subclass <literal>Connection::query()</literal>. Plugin
+   registration happens at <literal>MINIT</literal> using the logic
+   shown previously. PHP calls extensions in alphabetical order by
+   default. Plugins are not aware of each other and do not set extension
+   dependencies.
+  </simpara>
+  <simpara>
+   By default the plugins call the parent implementation of the query
+   method in their derived version of the method.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">PHP Extension Recap</emphasis>
+  </simpara>
+  <simpara>
+   This is a recap of what happens when using an example plugin,
+   <literal>ext/mysqlnd_plugin</literal>, which exposes the
+   <literal>mysqlnd</literal> C plugin API to PHP:
+  </simpara>
+  <itemizedlist>
+   <listitem>
+    <simpara>
+     Any PHP MySQL application tries to establish a connection to
+     192.168.2.29
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     The PHP application will either use <literal>ext/mysql</literal>,
+     <literal>ext/mysqli</literal> or <literal>PDO_MYSQL</literal>. All
+     three PHP MySQL extensions use <literal>mysqlnd</literal> to
+     establish the connection to 192.168.2.29.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     <literal>Mysqlnd</literal> calls its connect method, which has been
+     subclassed by <literal>ext/mysqlnd_plugin</literal>.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     <literal>ext/mysqlnd_plugin</literal> calls the userspace hook
+     <literal>proxy::connect()</literal> registered by the user.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     The userspace hook changes the connection host IP from 192.168.2.29
+     to 127.0.0.1 and returns the connection established by
+     <literal>parent::connect()</literal>.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     <literal>ext/mysqlnd_plugin</literal> performs the equivalent of
+     <literal>parent::connect(127.0.0.1)</literal> by calling the
+     original <literal>mysqlnd</literal> method for establishing a
+     connection.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     <literal>ext/mysqlnd</literal> establishes a connection and returns
+     to <literal>ext/mysqlnd_plugin</literal>.
+     <literal>ext/mysqlnd_plugin</literal> returns as well.
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Whatever PHP MySQL extension had been used by the application, it
+     receives a connection to 127.0.0.1. The PHP MySQL extension itself
+     returns to the PHP application. The circle is closed.
+    </simpara>
+   </listitem>
+  </itemizedlist>
+ </section>
+ <section xml:id="mysqlnd.plugin.developing">
+  <title>Getting started building a mysqlnd plugin</title>
+  <simpara>
+   It is important to remember that a <literal>mysqlnd</literal> plugin
+   is itself a PHP extension.
+  </simpara>
+  <simpara>
+   The following code shows the basic structure of the MINIT function
+   that will be used in the typical <literal>mysqlnd</literal> plugin:
+  </simpara>
+<programlisting>
+<![CDATA[
+/* my_php_mysqlnd_plugin.c */
+
+ static PHP_MINIT_FUNCTION(mysqlnd_plugin) {
+  /* globals, ini entries, resources, classes */
+
+  /* register mysqlnd plugin */
+  mysqlnd_plugin_id = mysqlnd_plugin_register();
+
+  conn_m = mysqlnd_get_conn_methods();
+  memcpy(org_conn_m, conn_m,
+    sizeof(struct st_mysqlnd_conn_methods));
+
+  conn_m->query = MYSQLND_METHOD(mysqlnd_plugin_conn, query);
+  conn_m->connect = MYSQLND_METHOD(mysqlnd_plugin_conn, connect);
+}
+]]>
+</programlisting>
+<programlisting>
+<![CDATA[
+/* my_mysqlnd_plugin.c */
+
+ enum_func_status MYSQLND_METHOD(mysqlnd_plugin_conn, query)(/* ... */) {
+  /* ... */
+}
+enum_func_status MYSQLND_METHOD(mysqlnd_plugin_conn, connect)(/* ... */) {
+  /* ... */
+}
+]]>
+</programlisting>
+  <simpara>
+   <emphasis role="bold">Task analysis: from C to userspace</emphasis>
+  </simpara>
+<programlisting>
+<![CDATA[
+ class proxy extends mysqlnd_plugin_connection {
+  public function connect($host, ...) { .. }
+}
+mysqlnd_plugin_set_conn_proxy(new proxy());
+]]>
+</programlisting>
+  <simpara>
+   Process:
+  </simpara>
+  <orderedlist>
+   <listitem>
+    <simpara>
+     PHP: user registers plugin callback
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     PHP: user calls any PHP MySQL API to connect to MySQL
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     C: ext/*mysql* calls mysqlnd method
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     C: mysqlnd ends up in ext/mysqlnd_plugin
+    </simpara>
+   </listitem>
+   <listitem>
+    <para>
+     C: ext/mysqlnd_plugin
+     <orderedlist>
+      <listitem>
+       <simpara>
+        Calls userspace callback
+       </simpara>
+      </listitem>
+      <listitem>
+       <simpara>
+        Or original <literal>mysqlnd</literal> method, if userspace
+        callback not set
+       </simpara>
+      </listitem>
+     </orderedlist>
+    </para>
+   </listitem>
+  </orderedlist>
+  <simpara>
+   You need to carry out the following:
+  </simpara>
+  <orderedlist>
+   <listitem>
+    <simpara>
+     Write a class "mysqlnd_plugin_connection" in C
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Accept and register proxy object through
+     "mysqlnd_plugin_set_conn_proxy()"
+    </simpara>
+   </listitem>
+   <listitem>
+    <simpara>
+     Call userspace proxy methods from C (optimization -
+     zend_interfaces.h)
+    </simpara>
+   </listitem>
+  </orderedlist>
+  <simpara>
+   Userspace object methods can either be called using
+   <literal>call_user_function()</literal> or you can operate at a level
+   closer to the Zend Engine and use
+   <literal>zend_call_method()</literal>.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">Optimization: calling methods from C using zend_call_method</emphasis>
+  </simpara>
+  <simpara>
+   The following code snippet shows the prototype for the
+   <literal>zend_call_method</literal> function, taken from
+   <filename>zend_interfaces.h</filename>.
+  </simpara>
+<programlisting>
+<![CDATA[
+ ZEND_API zval* zend_call_method(
+  zval **object_pp, zend_class_entry *obj_ce,
+  zend_function **fn_proxy, char *function_name,
+  int function_name_len, zval **retval_ptr_ptr,
+  int param_count, zval* arg1, zval* arg2 TSRMLS_DC
+);
+]]>
+</programlisting>
+  <simpara>
+   Zend API supports only two arguments. You may need more, for example:
+  </simpara>
+<programlisting>
+<![CDATA[
+ enum_func_status (*func_mysqlnd_conn__connect)(
+  MYSQLND *conn, const char *host,
+  const char * user, const char * passwd,
+  unsigned int passwd_len, const char * db,
+  unsigned int db_len, unsigned int port,
+  const char * socket, unsigned int mysql_flags TSRMLS_DC
+);
+]]>
+</programlisting>
+  <simpara>
+   To get around this problem you will need to make a copy of
+   <literal>zend_call_method()</literal> and add a facility for
+   additional parameters. You can do this by creating a set of
+   <literal>MY_ZEND_CALL_METHOD_WRAPPER</literal> macros.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">Calling PHP userspace</emphasis>
+  </simpara>
+  <simpara>
+   This code snippet shows the optimized method for calling a userspace
+   function from C:
+  </simpara>
+<programlisting>
+<![CDATA[
+/* my_mysqlnd_plugin.c */
+
+MYSQLND_METHOD(my_conn_class,connect)(
+  MYSQLND *conn, const char *host /* ... */ TSRMLS_DC) {
+  enum_func_status ret = FAIL;
+  zval * global_user_conn_proxy = fetch_userspace_proxy();
+  if (global_user_conn_proxy) {
+    /* call userspace proxy */
+    ret = MY_ZEND_CALL_METHOD_WRAPPER(global_user_conn_proxy, host, /*...*/);
+  } else {
+    /* or original mysqlnd method = do nothing, be transparent */
+    ret = org_methods.connect(conn, host, user, passwd,
+          passwd_len, db, db_len, port,
+          socket, mysql_flags TSRMLS_CC);
+  }
+  return ret;
+}
+]]>
+</programlisting>
+  <simpara>
+   <emphasis role="bold">Calling userspace: simple arguments</emphasis>
+  </simpara>
+<programlisting>
+<![CDATA[
+/* my_mysqlnd_plugin.c */
+
+ MYSQLND_METHOD(my_conn_class,connect)(
+  /* ... */, const char *host, /* ...*/) {
+  /* ... */
+  if (global_user_conn_proxy) {
+    /* ... */
+    zval* zv_host;
+    MAKE_STD_ZVAL(zv_host);
+    ZVAL_STRING(zv_host, host, 1);
+    MY_ZEND_CALL_METHOD_WRAPPER(global_user_conn_proxy, zv_retval, zv_host /*, ...*/);
+    zval_ptr_dtor(&zv_host);
+    /* ... */
+  }
+  /* ... */
+}
+]]>
+</programlisting>
+  <simpara>
+   <emphasis role="bold">Calling userspace: structs as arguments</emphasis>
+  </simpara>
+<programlisting>
+<![CDATA[
+/* my_mysqlnd_plugin.c */
+
+MYSQLND_METHOD(my_conn_class, connect)(
+  MYSQLND *conn, /* ...*/) {
+  /* ... */
+  if (global_user_conn_proxy) {
+    /* ... */
+    zval* zv_conn;
+    ZEND_REGISTER_RESOURCE(zv_conn, (void *)conn, le_mysqlnd_plugin_conn);
+    MY_ZEND_CALL_METHOD_WRAPPER(global_user_conn_proxy, zv_retval, zv_conn, zv_host /*, ...*/);
+    zval_ptr_dtor(&zv_conn);
+    /* ... */
+  }
+  /* ... */
+}
+]]>
+</programlisting>
+  <simpara>
+   The first argument of many <literal>mysqlnd</literal> methods is a C
+   "object". For example, the first argument of the connect() method is
+   a pointer to <literal>MYSQLND</literal>. The struct MYSQLND
+   represents a <literal>mysqlnd</literal> connection object.
+  </simpara>
+  <simpara>
+   The <literal>mysqlnd</literal> connection object pointer can be
+   compared to a standard I/O file handle. Like a standard I/O file
+   handle a <literal>mysqlnd</literal> connection object shall be linked
+   to the userspace using the PHP resource variable type.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">From C to userspace and back</emphasis>
+  </simpara>
+<programlisting>
+<![CDATA[
+ class proxy extends mysqlnd_plugin_connection {
+  public function connect($conn, $host, ...) {
+    /* "pre" hook */
+    printf("Connecting to host = '%s'\n", $host);
+    debug_print_backtrace();
+    return parent::connect($conn);
+  }
+
+  public function query($conn, $query) {
+    /* "post" hook */
+    $ret = parent::query($conn, $query);
+    printf("Query = '%s'\n", $query);
+    return $ret;
+  }
+}
+mysqlnd_plugin_set_conn_proxy(new proxy());
+]]>
+</programlisting>
+  <simpara>
+   PHP users must be able to call the parent implementation of an
+   overwritten method.
+  </simpara>
+  <simpara>
+   As a result of subclassing it is possible to refine only selected
+   methods and you can choose to have "pre" or "post" hooks.
+  </simpara>
+  <simpara>
+   <emphasis role="bold">Built-in class: mysqlnd_plugin_connection::connect()</emphasis>
+  </simpara>
+<programlisting>
+<![CDATA[
+/*  my_mysqlnd_plugin_classes.c */
+
+ PHP_METHOD("mysqlnd_plugin_connection", connect) {
+  /* ... simplified! ... */
+  zval* mysqlnd_rsrc;
+  MYSQLND* conn;
+  char* host; int host_len;
+  if (zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "rs",
+    &mysqlnd_rsrc, &host, &host_len) == FAILURE) {
+    RETURN_NULL();
+  }
+  ZEND_FETCH_RESOURCE(conn, MYSQLND* conn, &mysqlnd_rsrc, -1,
+    "Mysqlnd Connection", le_mysqlnd_plugin_conn);
+  if (PASS == org_methods.connect(conn, host, /* simplified! */ TSRMLS_CC))
+    RETVAL_TRUE;
+  else
+    RETVAL_FALSE;
+}
+]]>
+</programlisting>
+ </section>
+</chapter>
+<!-- Keep this comment at the end of the file
+Local variables:
+mode: sgml
+sgml-omittag:t
+sgml-shorttag:t
+sgml-minimize-attributes:nil
+sgml-always-quote-attributes:t
+sgml-indent-step:1
+sgml-indent-data:t
+indent-tabs-mode:nil
+sgml-parent-document:nil
+sgml-default-dtd-file:"~/.phpdoc/manual.ced"
+sgml-exposed-tags:nil
+sgml-local-catalogs:nil
+sgml-local-ecat-files:nil
+End:
+vim600: syn=xml fen fdm=syntax fdl=2 si
+vim: et tw=78 syn=sgml
+vi: ts=1 sw=1
+-->
