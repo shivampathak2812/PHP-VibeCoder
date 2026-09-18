@@ -23,14 +23,26 @@ if "torchvision" not in sys.modules:
     try:
         import torchvision  # noqa: F401
     except ImportError:
-        _tv = types.ModuleType("torchvision")
+        import importlib.machinery
 
-        _tv_io = types.ModuleType("torchvision.io")
+        def _make_stub_module(name):
+            mod = types.ModuleType(name)
+            mod.__spec__ = importlib.machinery.ModuleSpec(
+                name, loader=None
+            )
+            return mod
+
+        _tv = _make_stub_module("torchvision")
+        _tv.__spec__.submodule_search_locations = []
+
+        _tv_io = _make_stub_module("torchvision.io")
         _tv_io.read_image = lambda *a, **kw: None
 
-        _tv_transforms = types.ModuleType("torchvision.transforms")
-        _tv_transforms_v2 = types.ModuleType("torchvision.transforms.v2")
-        _tv_transforms_v2_functional = types.ModuleType(
+        _tv_transforms = _make_stub_module("torchvision.transforms")
+        _tv_transforms_v2 = _make_stub_module(
+            "torchvision.transforms.v2"
+        )
+        _tv_transforms_v2_functional = _make_stub_module(
             "torchvision.transforms.v2.functional"
         )
 
