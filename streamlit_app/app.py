@@ -1,63 +1,9 @@
 import os
 import sys
-import types
 import shutil
 from pathlib import Path
 
 import streamlit as st
-
-
-# ============================================================
-# TORCHVISION STUB
-# ============================================================
-# We only use sentence-transformers/all-MiniLM-L6-v2, a pure text
-# embedding model. It never needs torchvision. But Streamlit's
-# module inspection can trigger `transformers`'s lazy loader to
-# probe torchvision-dependent submodules, causing a hard crash
-# (ModuleNotFoundError) even though the actual code path is never
-# used. Stub the two specific broken imports so the probe finds
-# something importable and moves on, without installing the real
-# (huge, CUDA-pulling) torchvision package.
-
-if "torchvision" not in sys.modules:
-    try:
-        import torchvision  # noqa: F401
-    except ImportError:
-        import importlib.machinery
-
-        def _make_stub_module(name):
-            mod = types.ModuleType(name)
-            mod.__spec__ = importlib.machinery.ModuleSpec(
-                name, loader=None
-            )
-            return mod
-
-        _tv = _make_stub_module("torchvision")
-        _tv.__spec__.submodule_search_locations = []
-
-        _tv_io = _make_stub_module("torchvision.io")
-        _tv_io.read_image = lambda *a, **kw: None
-
-        _tv_transforms = _make_stub_module("torchvision.transforms")
-        _tv_transforms_v2 = _make_stub_module(
-            "torchvision.transforms.v2"
-        )
-        _tv_transforms_v2_functional = _make_stub_module(
-            "torchvision.transforms.v2.functional"
-        )
-
-        _tv.io = _tv_io
-        _tv.transforms = _tv_transforms
-        _tv_transforms.v2 = _tv_transforms_v2
-        _tv_transforms_v2.functional = _tv_transforms_v2_functional
-
-        sys.modules["torchvision"] = _tv
-        sys.modules["torchvision.io"] = _tv_io
-        sys.modules["torchvision.transforms"] = _tv_transforms
-        sys.modules["torchvision.transforms.v2"] = _tv_transforms_v2
-        sys.modules["torchvision.transforms.v2.functional"] = (
-            _tv_transforms_v2_functional
-        )
 
 
 # ============================================================

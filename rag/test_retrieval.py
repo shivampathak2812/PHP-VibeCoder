@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 import faiss
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from fastembed import TextEmbedding
 
 
 # =========================
@@ -34,7 +35,7 @@ def search(query):
     print("-" * 70)
 
     # Load model
-    model = SentenceTransformer(MODEL_NAME)
+    model = TextEmbedding(model_name=MODEL_NAME)
 
     # Load FAISS index
     index = faiss.read_index(str(INDEX_FILE))
@@ -43,13 +44,14 @@ def search(query):
     metadata = load_metadata()
 
     # Convert query into embedding
-    query_embedding = model.encode(
-        [query],
-        normalize_embeddings=True,
-        convert_to_numpy=True,
+    query_embedding = np.array(
+        list(model.embed([query])),
+        dtype="float32",
     )
 
-    query_embedding = query_embedding.astype("float32")
+    norms = np.linalg.norm(query_embedding, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    query_embedding = (query_embedding / norms).astype("float32")
 
     # Search
     scores, indices = index.search(query_embedding, TOP_K)

@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 import faiss
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from fastembed import TextEmbedding
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,7 +31,7 @@ class PHPRetriever:
         self.top_k = top_k
 
         print("Loading embedding model...")
-        self.model = SentenceTransformer(MODEL_NAME)
+        self.model = TextEmbedding(model_name=MODEL_NAME)
 
         print("Loading FAISS index...")
         self.index = faiss.read_index(str(INDEX_FILE))
@@ -43,11 +44,16 @@ class PHPRetriever:
 
     def retrieve(self, query):
 
-        query_embedding = self.model.encode(
-            [query],
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-        ).astype("float32")
+        query_embedding = np.array(
+            list(self.model.embed([query])),
+            dtype="float32",
+        )
+
+        norms = np.linalg.norm(
+            query_embedding, axis=1, keepdims=True
+        )
+        norms[norms == 0] = 1.0
+        query_embedding = (query_embedding / norms).astype("float32")
 
         scores, indices = self.index.search(
             query_embedding,

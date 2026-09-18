@@ -3,7 +3,7 @@ from pathlib import Path
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 
 # =========================
@@ -51,21 +51,20 @@ def build_index(records):
 
     print(f"Loading embedding model: {MODEL_NAME}")
 
-    model = SentenceTransformer(MODEL_NAME)
+    model = TextEmbedding(model_name=MODEL_NAME)
 
     texts = [record["text"] for record in records]
 
     print(f"Creating embeddings for {len(texts)} chunks...")
 
-    embeddings = model.encode(
-        texts,
-        batch_size=BATCH_SIZE,
-        show_progress_bar=True,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
+    embeddings = np.array(
+        list(model.embed(texts, batch_size=BATCH_SIZE)),
+        dtype="float32",
     )
 
-    embeddings = embeddings.astype("float32")
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    embeddings = (embeddings / norms).astype("float32")
 
     dimension = embeddings.shape[1]
 
