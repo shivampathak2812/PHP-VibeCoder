@@ -10,6 +10,26 @@ from google.genai import types
 load_dotenv()
 
 
+def _get_gemini_api_key():
+    """
+    Look for GEMINI_API_KEY in:
+    1. Local .env / real environment variable (local dev)
+    2. Streamlit Cloud secrets (st.secrets), if running under Streamlit
+    """
+    key = os.getenv("GEMINI_API_KEY")
+
+    if key:
+        return key
+
+    try:
+        import streamlit as st
+        key = st.secrets.get("GEMINI_API_KEY")
+    except Exception:
+        key = None
+
+    return key
+
+
 class GeminiModelManager:
 
     PRIMARY_MODEL = "gemini-3.6-flash"
@@ -20,11 +40,11 @@ class GeminiModelManager:
 
     def __init__(self):
 
-        api_key = os.getenv("GEMINI_API_KEY")
+        api_key = _get_gemini_api_key()
 
         if not api_key:
             raise ValueError(
-                "GEMINI_API_KEY not found in .env"
+                "GEMINI_API_KEY not found in .env or Streamlit secrets"
             )
 
         self.client = genai.Client(
