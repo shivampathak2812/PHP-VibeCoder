@@ -5,6 +5,7 @@ description = "GenAI and RAG based PHP Vibe Coding Agent"
 authors = [
     {name = "shivampathak2812",email = "pathakshivam3738@gmail.com"}
 ]
+package-mode = false
 requires-python = ">=3.13"
 dependencies = [
     "fastapi (>=0.141.1,<0.142.0)",
