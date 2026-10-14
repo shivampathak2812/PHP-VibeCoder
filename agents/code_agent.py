@@ -5,6 +5,7 @@ from pathlib import Path
 from rag.context_builder import PHPContextBuilder
 from agents.project_writer import ProjectWriter
 from agents.gemini_model_manager import GeminiModelManager
+from agents.php_rules import PHP_QUALITY_RULES
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -25,6 +26,10 @@ class PHPCodeAgent:
         """Same requirement + same attachment -> same key."""
 
         digest = hashlib.sha256()
+
+        # New rules -> new key, so answers made under old rules
+        # are not served from the cache.
+        digest.update(PHP_QUALITY_RULES.encode("utf-8"))
 
         digest.update(
             " ".join(requirement.lower().split()).encode("utf-8")
@@ -155,12 +160,13 @@ PHP DOCUMENTATION (from RAG, use as primary PHP reference):
 
 RULES:
 - Modern PHP 8.x, no deprecated mysql_* functions.
-- MySQL via PDO with prepared statements; password_hash() for passwords.
-- Proper error handling; no secrets or API keys in source code.
+- MySQL via PDO unless the user asks for something else.
 - Complete code only: no placeholders, TODOs or "..." stubs.
 - Only what the requirement needs; no unrelated features.
 - Include every file needed (PHP, SQL, CSS, JS, config).
 - Do not claim the code was tested.
+
+{PHP_QUALITY_RULES}
 
 OUTPUT FORMAT (follow exactly, keep prose short):
 

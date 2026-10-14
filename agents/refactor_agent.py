@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from agents.gemini_model_manager import GeminiModelManager
+from agents.php_rules import PHP_QUALITY_RULES
 from agents.project_analyzer import PHPProjectAnalyzer
 
 
@@ -90,6 +91,10 @@ IMPORTANT RULES:
 11. The resulting code must be valid PHP 8.x.
 12. Return the COMPLETE corrected file.
 13. Do not return explanations outside the code block.
+14. Where the code you touch breaks the quality rules below,
+    fix it as part of the refactoring.
+
+{PHP_QUALITY_RULES}
 
 USER REFACTORING REQUEST:
 
