@@ -35,8 +35,21 @@ class GeminiModelManager:
     PRIMARY_MODEL = "gemini-3.6-flash"
     FALLBACK_MODEL = "gemini-3.5-flash"
 
-    MAX_RETRIES_PER_MODEL = 2
+    # Last resort when both Flash models are overloaded (503).
+    EXTRA_FALLBACK_MODEL = "gemini-2.5-flash"
+
+    MAX_RETRIES_PER_MODEL = 3
+
+    # Exponential backoff: 5s, 10s, 20s ...
     RETRY_DELAY_SECONDS = 5
+    MAX_RETRY_DELAY_SECONDS = 30
+
+    def _retry_delay(self, attempt):
+
+        return min(
+            self.RETRY_DELAY_SECONDS * (2 ** (attempt - 1)),
+            self.MAX_RETRY_DELAY_SECONDS
+        )
 
     def __init__(self):
 
@@ -151,6 +164,7 @@ Use the uploaded file as additional input for the project.
         models = [
             self.PRIMARY_MODEL,
             self.FALLBACK_MODEL,
+            self.EXTRA_FALLBACK_MODEL,
         ]
 
         last_error = None
@@ -236,15 +250,15 @@ Use the uploaded file as additional input for the project.
 
                         if attempt < self.MAX_RETRIES_PER_MODEL:
 
+                            delay = self._retry_delay(attempt)
+
                             print(
                                 f"Model temporarily unavailable. "
                                 f"Retrying in "
-                                f"{self.RETRY_DELAY_SECONDS} seconds..."
+                                f"{delay} seconds..."
                             )
 
-                            time.sleep(
-                                self.RETRY_DELAY_SECONDS
-                            )
+                            time.sleep(delay)
 
                             continue
 
@@ -272,15 +286,15 @@ Use the uploaded file as additional input for the project.
 
                         if attempt < self.MAX_RETRIES_PER_MODEL:
 
+                            delay = self._retry_delay(attempt)
+
                             print(
                                 f"Temporary Gemini error. "
                                 f"Retrying in "
-                                f"{self.RETRY_DELAY_SECONDS} seconds..."
+                                f"{delay} seconds..."
                             )
 
-                            time.sleep(
-                                self.RETRY_DELAY_SECONDS
-                            )
+                            time.sleep(delay)
 
                             continue
 

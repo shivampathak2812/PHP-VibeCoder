@@ -152,6 +152,43 @@ def read_project_file(
         return f"Unable to read file:\n{e}"
 
 
+def show_error(message, error):
+    """
+    Show a friendly message when Gemini is overloaded or rate limited,
+    otherwise show the full error with traceback.
+    """
+
+    error_text = str(error)
+
+    if any(
+        code in error_text
+        for code in ["503", "UNAVAILABLE", "high demand"]
+    ):
+
+        st.warning(
+            "Gemini is busy right now (high demand on Google's side). "
+            "Please wait a minute and try again."
+        )
+
+        return
+
+    if any(
+        code in error_text
+        for code in ["429", "RESOURCE_EXHAUSTED"]
+    ):
+
+        st.warning(
+            "Gemini quota / rate limit reached. "
+            "Please wait a bit and try again."
+        )
+
+        return
+
+    st.error(message)
+
+    st.exception(error)
+
+
 def get_language(filename):
 
     ext = os.path.splitext(
@@ -903,11 +940,10 @@ if mode == "Generate Project":
 
                 status.empty()
 
-                st.error(
-                    "Error while running Vibe Coder."
+                show_error(
+                    "Error while running Vibe Coder.",
+                    e
                 )
-
-                st.exception(e)
 
 
 # ============================================================
@@ -1034,11 +1070,10 @@ elif mode == "Understand Code":
 
                     except Exception as e:
 
-                        st.error(
-                            "Error while understanding project."
+                        show_error(
+                            "Error while understanding project.",
+                            e
                         )
-
-                        st.exception(e)
 
         if st.session_state.understanding_answer:
 
@@ -1148,11 +1183,10 @@ elif mode == "Refactor Code":
 
                 except Exception as e:
 
-                    st.error(
-                        "Error while refactoring."
+                    show_error(
+                        "Error while refactoring.",
+                        e
                     )
-
-                    st.exception(e)
 
 
 # ============================================================
@@ -1204,11 +1238,10 @@ elif mode == "Test Project":
 
                 except Exception as e:
 
-                    st.error(
-                        "Error while testing project."
+                    show_error(
+                        "Error while testing project.",
+                        e
                     )
-
-                    st.exception(e)
 
         display_test_result(
             st.session_state.last_test_result
