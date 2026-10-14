@@ -20,3 +20,6 @@ uploaded_files/*
 build/
 dist/
 *.egg-info/
+
+# Cached Gemini responses
+.cache/

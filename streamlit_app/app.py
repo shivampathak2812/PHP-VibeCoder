@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 import shutil
 from pathlib import Path
 
@@ -22,6 +23,12 @@ from agents.vibe_coder import PHPVibeCoder
 from agents.code_understanding_agent import PHPCodeUnderstandingAgent
 from agents.refactor_agent import PHPRefactorAgent
 from agents.php_tester import PHPTester
+from streamlit_app.history_store import (
+    append_message,
+    create_history,
+    get_or_create_history,
+    list_projects_with_history,
+)
 
 
 # ============================================================
@@ -39,6 +46,11 @@ UPLOADED_FILES_DIR = os.path.join(
 )
 
 os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
+
+# Cooldown when everyone shares the app's Gemini key.
+# Users who enter their own key are not limited.
+GENERATIONS_PER_WINDOW = 3
+GENERATION_WINDOW_SECONDS = 10 * 60
 
 
 st.set_page_config(
@@ -60,6 +72,9 @@ defaults = {
     "selected_file": None,
     "uploaded_file_info": None,
     "upload_message": None,
+    "active_chat": None,
+    "user_api_key": "",
+    "generation_times": [],
 }
 
 for key, value in defaults.items():
@@ -152,6 +167,102 @@ def read_project_file(
         return f"Unable to read file:\n{e}"
 
 
+def get_user_api_key():
+    """The user's own Gemini key from the sidebar, or None."""
+
+    key = (st.session_state.get("user_api_key") or "").strip()
+
+    return key or None
+
+
+def recent_generation_times():
+
+    now = time.time()
+
+    times = [
+        t
+        for t in st.session_state.generation_times
+        if now - t < GENERATION_WINDOW_SECONDS
+    ]
+
+    st.session_state.generation_times = times
+
+    return times
+
+
+def generations_left():
+    """None means unlimited (user brought their own key)."""
+
+    if get_user_api_key():
+        return None
+
+    return max(
+        0,
+        GENERATIONS_PER_WINDOW - len(recent_generation_times())
+    )
+
+
+def seconds_until_next_generation():
+
+    times = recent_generation_times()
+
+    if len(times) < GENERATIONS_PER_WINDOW:
+        return 0
+
+    return int(
+        GENERATION_WINDOW_SECONDS - (time.time() - min(times))
+    ) + 1
+
+
+def open_chat(project):
+    st.session_state.active_chat = project
+    st.session_state.current_project = project
+
+
+def start_new_project():
+    st.session_state.active_chat = None
+    st.session_state.mode = "Generate Project"
+
+
+def on_mode_change():
+    st.session_state.active_chat = None
+
+
+def build_generation_summary(result, files):
+
+    lines = []
+
+    if result.get("success"):
+        lines.append(
+            f"Generated project **{result.get('project')}** "
+            f"with {len(files)} file(s)."
+        )
+    else:
+        lines.append(
+            f"Generated project **{result.get('project')}**, "
+            "but PHP validation did not fully pass."
+        )
+
+    if result.get("validated") is False:
+        lines.append(
+            "PHP is not installed here, so syntax validation was skipped."
+        )
+
+    if result.get("model"):
+        lines.append(f"Model: `{result.get('model')}`")
+
+    if files:
+        lines.append(
+            "**Files:**\n" + "\n".join(f"- `{f}`" for f in files)
+        )
+
+    lines.append(
+        "Ask me anything about this project below."
+    )
+
+    return "\n\n".join(lines)
+
+
 def show_error(message, error):
     """
     Show a friendly message when Gemini is overloaded or rate limited,
@@ -179,7 +290,17 @@ def show_error(message, error):
 
         st.warning(
             "Gemini quota / rate limit reached. "
-            "Please wait a bit and try again."
+            "Please wait a bit and try again, or enter your own "
+            "free Gemini API key in the sidebar (🔑) to keep going."
+        )
+
+        return
+
+    if "GEMINI_API_KEY not found" in error_text:
+
+        st.warning(
+            "No Gemini API key configured. Enter your own key "
+            "in the sidebar (🔑)."
         )
 
         return
@@ -651,6 +772,13 @@ st.sidebar.title(
     "PHP Vibe Coder"
 )
 
+st.sidebar.button(
+    "➕ New Project",
+    use_container_width=True,
+    on_click=start_new_project,
+    key="new_project_button"
+)
+
 mode = st.sidebar.radio(
     "Operation",
     [
@@ -659,23 +787,238 @@ mode = st.sidebar.radio(
         "Understand Code",
         "Refactor Code",
         "Test Project"
-    ]
+    ],
+    key="mode",
+    on_change=on_mode_change
 )
 
 st.sidebar.markdown(
     "---"
 )
 
+# Filled at the end of the script so a project generated
+# in this run shows up immediately.
+history_container = st.sidebar.container()
+
+st.sidebar.markdown(
+    "---"
+)
+
+with st.sidebar.expander(
+    "🔑 Your Gemini API key (optional)"
+):
+
+    st.text_input(
+        "Gemini API key",
+        type="password",
+        key="user_api_key",
+        placeholder="AIza...",
+        label_visibility="collapsed"
+    )
+
+    st.caption(
+        "Use your own free key from "
+        "[Google AI Studio](https://aistudio.google.com/apikey) "
+        "for unlimited generations. It stays in this browser "
+        "session only and is never saved."
+    )
+
+# Filled at the end of the script so the count is up to date.
+usage_placeholder = st.sidebar.empty()
+
 st.sidebar.caption(
     "PHP 8.x • Gemini • RAG • FAISS"
 )
+
+
+def render_usage_sidebar():
+
+    left = generations_left()
+
+    if left is None:
+
+        usage_placeholder.caption(
+            "✅ Using your own API key: no generation limit."
+        )
+
+    else:
+
+        usage_placeholder.caption(
+            f"Generations left: {left}/{GENERATIONS_PER_WINDOW} "
+            f"(resets every {GENERATION_WINDOW_SECONDS // 60} min)"
+        )
+
+
+def render_history_sidebar():
+
+    with history_container:
+
+        st.markdown(
+            "**History**"
+        )
+
+        items = list_projects_with_history(
+            GENERATED_PROJECTS_DIR
+        )
+
+        if not items:
+
+            st.caption(
+                "No projects yet."
+            )
+
+            return
+
+        for item in items:
+
+            project = item["project"]
+
+            requirement = (
+                item.get("requirement") or ""
+            ).strip().replace("\n", " ")
+
+            label = f"💬 {project}"
+
+            st.button(
+                label,
+                key=f"history_{project}",
+                help=requirement[:200] or None,
+                use_container_width=True,
+                type=(
+                    "primary"
+                    if st.session_state.active_chat == project
+                    else "secondary"
+                ),
+                on_click=open_chat,
+                args=(project,)
+            )
+
+
+def render_chat(project):
+
+    project_dir = os.path.join(
+        GENERATED_PROJECTS_DIR,
+        project
+    )
+
+    if not os.path.isdir(project_dir):
+
+        st.warning(
+            f"Project `{project}` no longer exists."
+        )
+
+        return
+
+    record = get_or_create_history(
+        project,
+        project_dir
+    )
+
+    st.header(
+        f"💬 {project}"
+    )
+
+    files = get_project_files(
+        project
+    )
+
+    with st.expander(
+        f"📁 Project files ({len(files)})"
+    ):
+
+        for file in files:
+
+            with st.expander(
+                f"📄 {file}"
+            ):
+
+                st.code(
+                    read_project_file(project, file),
+                    language=get_language(file)
+                )
+
+    if not record.get("messages"):
+
+        st.info(
+            "This project was generated before chat history existed. "
+            "Ask anything about it below."
+        )
+
+    for message in record.get("messages", []):
+
+        with st.chat_message(
+            message["role"]
+        ):
+
+            st.markdown(
+                message["content"]
+            )
+
+    question = st.chat_input(
+        f"Ask anything about {project}..."
+    )
+
+    if not question:
+        return
+
+    with st.chat_message("user"):
+
+        st.markdown(question)
+
+    earlier_messages = list(
+        record.get("messages", [])
+    )
+
+    with st.chat_message("assistant"):
+
+        with st.spinner(
+            "Thinking..."
+        ):
+
+            try:
+
+                agent = PHPCodeUnderstandingAgent(
+                    api_key=get_user_api_key()
+                )
+
+                answer = agent.ask(
+                    project_path=project_dir,
+                    question=question,
+                    history=earlier_messages,
+                    requirement=record.get("requirement")
+                )
+
+            except Exception as e:
+
+                show_error(
+                    "Error while answering.",
+                    e
+                )
+
+                return
+
+        st.markdown(answer)
+
+    append_message(record, "user", question)
+    append_message(record, "assistant", answer)
+
+
+# ============================================================
+# CHAT FOR A PROJECT FROM HISTORY
+# ============================================================
+
+if st.session_state.active_chat:
+
+    render_chat(
+        st.session_state.active_chat
+    )
 
 
 # ============================================================
 # 1. GENERATE PROJECT
 # ============================================================
 
-if mode == "Generate Project":
+elif mode == "Generate Project":
 
     st.header(
         "Generate PHP Project"
@@ -751,6 +1094,20 @@ if mode == "Generate Project":
                 "Please enter a project name."
             )
 
+        elif generations_left() == 0:
+
+            wait_minutes = max(
+                1,
+                round(seconds_until_next_generation() / 60)
+            )
+
+            st.warning(
+                f"You've used all {GENERATIONS_PER_WINDOW} free "
+                f"generations for now. Try again in about "
+                f"{wait_minutes} minute(s), or enter your own free "
+                "Gemini API key in the sidebar (🔑) for no limit."
+            )
+
         else:
 
             project_name = (
@@ -783,7 +1140,8 @@ if mode == "Generate Project":
                 )
 
                 coder = PHPVibeCoder(
-                    max_retries=3
+                    max_retries=3,
+                    api_key=get_user_api_key()
                 )
 
                 # ------------------------------------------------
@@ -818,6 +1176,12 @@ if mode == "Generate Project":
                     100
                 )
 
+                # Only count runs that produced a project.
+                if not get_user_api_key():
+                    st.session_state.generation_times.append(
+                        time.time()
+                    )
+
                 st.session_state.generation_response = result
 
                 st.session_state.current_project = result.get(
@@ -828,6 +1192,29 @@ if mode == "Generate Project":
                 status.empty()
 
                 progress.empty()
+
+                # --------------------------------------------
+                # SAVE TO HISTORY (shows in the sidebar)
+                # --------------------------------------------
+
+                project = st.session_state.current_project
+
+                create_history(
+                    project=project,
+                    requirement=requirement,
+                    summary=build_generation_summary(
+                        result,
+                        get_project_files(project)
+                    ),
+                    model=result.get("model")
+                )
+
+                st.button(
+                    "💬 Open chat for this project",
+                    on_click=open_chat,
+                    args=(project,),
+                    key="open_generated_chat"
+                )
 
                 # --------------------------------------------
                 # SUCCESS
@@ -844,9 +1231,18 @@ if mode == "Generate Project":
                         0
                     )
 
-                    st.info(
-                        f"Validation completed in {attempts} attempt(s)."
-                    )
+                    if result.get("validated") is False:
+
+                        st.info(
+                            "PHP is not installed on this server, "
+                            "so syntax validation was skipped."
+                        )
+
+                    else:
+
+                        st.info(
+                            f"Validation completed in {attempts} attempt(s)."
+                        )
 
                     project = st.session_state.current_project
 
@@ -1056,9 +1452,11 @@ elif mode == "Understand Code":
 
                     try:
 
-                        agent = PHPCodeUnderstandingAgent()
+                        agent = PHPCodeUnderstandingAgent(
+                            api_key=get_user_api_key()
+                        )
 
-                        answer = agent.understand(
+                        answer = agent.ask(
                             project_path=os.path.join(
                                 GENERATED_PROJECTS_DIR,
                                 project
@@ -1139,7 +1537,13 @@ elif mode == "Refactor Code":
                 use_container_width=True
             )
 
-            if refactor:
+            if refactor and not instruction.strip():
+
+                st.warning(
+                    "Please describe how you want this code refactored."
+                )
+
+            elif refactor:
 
                 file_path = os.path.join(
                     GENERATED_PROJECTS_DIR,
@@ -1153,14 +1557,22 @@ elif mode == "Refactor Code":
                         "Refactoring code with Gemini..."
                     ):
 
-                        agent = PHPRefactorAgent()
+                        agent = PHPRefactorAgent(
+                            api_key=get_user_api_key()
+                        )
 
-                        result = agent.refactor(
+                        refactored_code = agent.refactor_file(
                             project_path=os.path.join(
                                 GENERATED_PROJECTS_DIR,
                                 project
                             ),
-                            file_path=file_path
+                            file_path=file_path,
+                            instructions=instruction
+                        )
+
+                        agent.write_refactored_file(
+                            file_path,
+                            refactored_code
                         )
 
                     st.success(
@@ -1246,3 +1658,8 @@ elif mode == "Test Project":
         display_test_result(
             st.session_state.last_test_result
         )
+
+
+render_history_sidebar()
+
+render_usage_sidebar()

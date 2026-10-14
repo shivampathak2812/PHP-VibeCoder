@@ -75,8 +75,14 @@ class PHPTester:
             if result["status"] == "FAIL"
         )
 
+        php_available = not any(
+            result["error"] == "PHP executable was not found."
+            for result in results
+        )
+
         return {
             "project_dir": str(project_dir),
+            "php_available": php_available,
             "total_files": len(php_files),
             "passed": passed,
             "failed": failed,

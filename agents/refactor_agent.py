@@ -24,8 +24,10 @@ class PHPRefactorAgent:
         Write Changes
     """
 
-    def __init__(self):
-        self.model_manager = GeminiModelManager()
+    MAX_OUTPUT_TOKENS = 16384
+
+    def __init__(self, api_key=None):
+        self.model_manager = GeminiModelManager(api_key=api_key)
 
     def read_file(self, file_path):
         """Read a PHP file."""
@@ -118,9 +120,10 @@ code block.
 """
 
         print("Sending code to Gemini for refactoring...")
-        print("Model priority: Gemini 3.6 Flash -> Gemini 3.5 Flash")
-
-        result = self.model_manager.generate(prompt)
+        result = self.model_manager.generate(
+            prompt,
+            max_output_tokens=self.MAX_OUTPUT_TOKENS
+        )
 
         if not result.get("success"):
             raise RuntimeError(
