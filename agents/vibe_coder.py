@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from agents.code_agent import PHPCodeAgent
 from agents.php_tester import PHPTester
 from agents.debug_agent import PHPDebugAgent
@@ -5,11 +7,12 @@ from agents.debug_agent import PHPDebugAgent
 
 class PHPVibeCoder:
 
-    def __init__(self, max_retries=3):
-        self.code_agent = PHPCodeAgent(top_k=5)
+    def __init__(self, max_retries=3, api_key=None):
+        self.code_agent = PHPCodeAgent(top_k=3, api_key=api_key)
         self.php_tester = PHPTester()
-        self.debug_agent = PHPDebugAgent()
+        self.debug_agent = PHPDebugAgent(api_key=api_key)
         self.max_retries = max_retries
+        self.last_generation = None
 
     def generate_project(
         self,
@@ -34,6 +37,8 @@ class PHPVibeCoder:
             attachment_path=attachment_path,
             attachment_type=attachment_type
         )
+
+        self.last_generation = result
 
         project_dir = result["project_dir"]
 
@@ -83,26 +88,38 @@ class PHPVibeCoder:
         print("=" * 70)
 
         for result in failed_results:
+            print(f"- {result['file']}")
 
-            file_path = result["file"]
-            error_message = result["error"]
+        # One Gemini request for all broken files.
+        print("\nSending all errors to Debug Agent in one request...")
 
-            print("\nDebugging file:")
-            print(file_path)
+        fixed_files = self.debug_agent.debug_files(
+            report["project_dir"],
+            failed_results
+        )
 
-            print("\nSending error to Debug Agent...")
+        allowed = {
+            str(Path(result["file"]).resolve())
+            for result in failed_results
+        }
 
-            corrected_code = self.debug_agent.debug_file(
-                file_path,
-                error_message
-            )
+        for file_path, corrected_code in fixed_files.items():
+
+            # Only overwrite files that were reported as broken.
+            if file_path not in allowed:
+                continue
 
             self.debug_agent.write_fixed_file(
                 file_path,
                 corrected_code
             )
 
-            print("File fixed successfully.")
+            print(f"Fixed: {file_path}")
+
+    def _model_used(self):
+        if self.last_generation:
+            return self.last_generation.get("model")
+        return None
 
     def run(
         self,
@@ -150,6 +167,28 @@ class PHPVibeCoder:
             report = self.test_project(project_dir)
 
             # --------------------------------------------------
+            # PHP NOT INSTALLED: don't spend Gemini calls
+            # "fixing" files that are not actually broken.
+            # --------------------------------------------------
+
+            if not report.get("php_available", True):
+
+                print(
+                    "\nPHP is not installed. "
+                    "Skipping syntax validation."
+                )
+
+                return {
+                    "success": True,
+                    "validated": False,
+                    "project_dir": project_dir,
+                    "project": Path(project_dir).name,
+                    "attempts": 0,
+                    "test_report": report,
+                    "model": self._model_used()
+                }
+
+            # --------------------------------------------------
             # SUCCESS
             # --------------------------------------------------
 
@@ -166,8 +205,10 @@ class PHPVibeCoder:
 
                 return {
                     "success": True,
+                    "validated": True,
+                    "model": self._model_used(),
                     "project_dir": project_dir,
-                    "project": project_dir.split("\\")[-1],
+                    "project": Path(project_dir).name,
                     "attempts": attempt,
                     "test_report": report
                 }
@@ -180,7 +221,23 @@ class PHPVibeCoder:
 
                 print("\nPHP errors detected.")
 
-                self.debug_project(report)
+                try:
+
+                    self.debug_project(report)
+
+                except Exception as e:
+
+                    # The project itself was generated; keep it and
+                    # report the debugging failure instead of losing it.
+                    return {
+                        "success": False,
+                        "model": self._model_used(),
+                        "project_dir": project_dir,
+                        "project": Path(project_dir).name,
+                        "attempts": attempt,
+                        "test_report": report,
+                        "error": f"Automatic debugging failed: {e}"
+                    }
 
                 print("\nRe-testing fixed project...")
 
@@ -197,8 +254,9 @@ class PHPVibeCoder:
 
                 return {
                     "success": False,
+                    "model": self._model_used(),
                     "project_dir": project_dir,
-                    "project": project_dir.split("\\")[-1],
+                    "project": Path(project_dir).name,
                     "attempts": attempt,
                     "test_report": report
                 }

@@ -1,16 +1,67 @@
+import json
+import hashlib
 from pathlib import Path
 
-from agents.rag_agent import RAGAgent
+from rag.context_builder import PHPContextBuilder
 from agents.project_writer import ProjectWriter
 from agents.gemini_model_manager import GeminiModelManager
 
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+CACHE_DIR = BASE_DIR / ".cache" / "generations"
+
+
 class PHPCodeAgent:
 
-    def __init__(self, top_k=5):
-        self.rag_agent = RAGAgent(top_k=top_k)
+    # Upper bound on the generated answer size.
+    MAX_OUTPUT_TOKENS = 32768
+
+    def __init__(self, top_k=3, api_key=None):
+        self.context_builder = PHPContextBuilder(top_k=top_k)
         self.project_writer = ProjectWriter()
-        self.model_manager = GeminiModelManager()
+        self.model_manager = GeminiModelManager(api_key=api_key)
+
+    def _cache_key(self, requirement, attachment_path=None):
+        """Same requirement + same attachment -> same key."""
+
+        digest = hashlib.sha256()
+
+        digest.update(
+            " ".join(requirement.lower().split()).encode("utf-8")
+        )
+
+        if attachment_path and Path(attachment_path).is_file():
+            digest.update(Path(attachment_path).read_bytes())
+
+        return digest.hexdigest()
+
+    def _read_cache(self, cache_key):
+
+        cache_file = CACHE_DIR / f"{cache_key}.json"
+
+        if not cache_file.is_file():
+            return None
+
+        try:
+            return json.loads(
+                cache_file.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return None
+
+    def _write_cache(self, cache_key, response, model):
+
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+            (CACHE_DIR / f"{cache_key}.json").write_text(
+                json.dumps(
+                    {"response": response, "model": model}
+                ),
+                encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"Could not write cache: {e}")
 
     def generate_code(
         self,
@@ -24,7 +75,7 @@ class PHPCodeAgent:
         # Get relevant PHP documentation from RAG
         # ---------------------------------------------------------
 
-        context = self.rag_agent.context_builder.build_context(
+        context = self.context_builder.build_context(
             requirement
         )
 
@@ -87,172 +138,99 @@ Do not ignore the uploaded file.
 """
 
         # ---------------------------------------------------------
-        # Create prompt for Gemini
+        # Create prompt for Gemini (kept short to save tokens)
         # ---------------------------------------------------------
 
         prompt = f"""
-You are an expert PHP 8.x developer and software architect.
-
-Your task is to generate a complete PHP project based on the
-user's requirement and any optional user-provided attachment.
+You are an expert PHP 8.x developer. Generate a complete, working
+PHP project for the user's requirement.
 
 USER REQUIREMENT:
 {requirement}
 
 {attachment_instruction}
 
-PHP DOCUMENTATION RETRIEVED FROM RAG:
+PHP DOCUMENTATION (from RAG, use as primary PHP reference):
 {context}
 
-Follow these requirements:
+RULES:
+- Modern PHP 8.x, no deprecated mysql_* functions.
+- MySQL via PDO with prepared statements; password_hash() for passwords.
+- Proper error handling; no secrets or API keys in source code.
+- Complete code only: no placeholders, TODOs or "..." stubs.
+- Only what the requirement needs; no unrelated features.
+- Include every file needed (PHP, SQL, CSS, JS, config).
+- Do not claim the code was tested.
 
-1. Understand the user's requirement completely.
-2. Use any uploaded file or image as additional project input.
-3. If an image is provided, analyze the image and implement
-   the relevant UI/design shown in it.
-4. Identify the functional requirements.
-5. Design a suitable PHP 8.x architecture.
-6. Identify all required files.
-7. Generate complete working PHP code.
-8. Use modern PHP 8.x practices.
-9. If MySQL is required, use PDO.
-10. Use prepared statements for SQL queries.
-11. Use password_hash() when storing passwords.
-12. Include proper error handling.
-13. Do not use deprecated mysql_* functions.
-14. Do not put passwords or API keys directly in source code.
-15. Use the provided PHP documentation as the primary PHP
-    knowledge source.
-16. Do not generate placeholder code.
-17. Do not claim that the code has been tested unless it has
-    actually been tested.
-18. Make the generated project match the user's requirement,
-    not a fixed example or predefined application.
-19. Do not introduce unrelated features.
-20. Generate all files required for the project to work.
-
-Return the answer using exactly these sections:
+OUTPUT FORMAT (follow exactly, keep prose short):
 
 PROJECT OVERVIEW
-
-Explain what the project does.
-
-REQUIREMENTS
-
-List the requirements understood from the user.
-
-ARCHITECTURE
-
-Explain the architecture.
+2-4 sentences on what the project does and its architecture.
 
 PROJECT STRUCTURE
-
-Show the complete folder and file structure.
+The folder and file tree.
 
 FILES
-
-For every required file provide:
-
-FILE: path/to/file.php
-
-Then provide the complete code for that file.
-
-Also provide complete code for SQL, JSON, configuration,
-HTML, CSS, JavaScript, and other required files.
-
-Each file must have exactly one FILE declaration.
-
-Use this format:
+For every file, one FILE line followed by one code block:
 
 FILE: index.php
 ```php
-complete code
+<complete code>
+```
 
 FILE: css/style.css
+```css
+<complete code>
+```
 
-complete code
-
-FILE: js/app.js
-
-complete code
-
-Do not combine multiple files into one code block.
-
-DATABASE
-
-If a database is required, explain:
-
-Database name
-Tables
-Columns
-Primary keys
-Foreign keys
-Indexes
-Relationships
-
-Also provide the complete SQL schema.
-
-API ENDPOINTS
-
-If the project is an API, explain:
-
-HTTP method
-Endpoint
-Purpose
-Request body
-Response
+Never put two files in one code block.
 
 SETUP
-
-Explain how to:
-
-Install dependencies.
-Configure the database.
-Configure environment variables.
-Start the application.
-Test the application.
-
-IMPORTANT:
-
-Generate actual complete code.
-
-Do not use placeholders such as:
-
-TODO
-[code here]
-[implementation here]
-...
+Short numbered steps to install, configure the database and run.
 """
 
-        # ---------------------------------------------------------
-        # Gemini 3.6 Flash -> Gemini 3.5 Flash automatic fallback
-        # ---------------------------------------------------------
-
         print("\nGenerating project...")
-        print(
-            "Model priority: "
-            "Gemini 3.6 Flash -> Gemini 3.5 Flash"
-        )
 
         if attachment_path:
             print(
                 f"Attachment included: {attachment_path}"
             )
 
-        result = self.model_manager.generate(
-            prompt,
-            attachment_path=attachment_path,
-            attachment_type=attachment_type
+        # ---------------------------------------------------------
+        # Reuse a cached answer for an identical request
+        # ---------------------------------------------------------
+
+        cache_key = self._cache_key(
+            requirement,
+            attachment_path
         )
 
-        if not result.get("success"):
-            raise RuntimeError(
-                f"Gemini generation failed: "
-                f"{result.get('error')}"
+        cached = self._read_cache(cache_key)
+
+        if cached:
+
+            print("\nUsing cached Gemini response.")
+
+            response = cached["response"]
+            selected_model = f"{cached.get('model')} (cached)"
+
+        else:
+
+            result = self.model_manager.generate(
+                prompt,
+                attachment_path=attachment_path,
+                attachment_type=attachment_type,
+                max_output_tokens=self.MAX_OUTPUT_TOKENS
             )
 
-        response = result["response"]
-        selected_model = result["model"]
+            if not result.get("success"):
+                raise RuntimeError(
+                    f"Gemini generation failed: "
+                    f"{result.get('error')}"
+                )
+
+            response = result["response"]
+            selected_model = result["model"]
 
         print(
             f"\nMODEL USED: {selected_model}"
@@ -266,6 +244,13 @@ TODO
             project_name,
             response
         )
+
+        if not cached:
+            self._write_cache(
+                cache_key,
+                response,
+                selected_model
+            )
 
         return {
             "project_dir": result["project_dir"],

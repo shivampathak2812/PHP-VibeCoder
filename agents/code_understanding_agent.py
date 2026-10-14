@@ -26,8 +26,13 @@ class PHPCodeUnderstandingAgent:
     - PHP concepts used in the project
     """
 
-    def __init__(self, top_k=5):
-        self.model_manager = GeminiModelManager()
+    MAX_OUTPUT_TOKENS = 4096
+
+    # How many earlier chat messages are sent along with a question.
+    MAX_HISTORY_MESSAGES = 6
+
+    def __init__(self, top_k=3, api_key=None):
+        self.model_manager = GeminiModelManager(api_key=api_key)
         self.top_k = top_k
 
     def analyze_project(self, project_path):
@@ -51,9 +56,33 @@ class PHPCodeUnderstandingAgent:
         except Exception as e:
             return f"[PHP RAG unavailable: {e}]"
 
-    def ask(self, project_path, question):
+    def format_history(self, history):
+        """Turn recent chat messages into plain text for the prompt."""
+
+        if not history:
+            return "No earlier messages."
+
+        lines = []
+
+        for message in history[-self.MAX_HISTORY_MESSAGES:]:
+
+            role = "User" if message.get("role") == "user" else "Assistant"
+            content = (message.get("content") or "").strip()
+
+            # Long earlier answers are trimmed to keep the prompt small.
+            if len(content) > 1500:
+                content = content[:1500] + " ..."
+
+            lines.append(f"{role}: {content}")
+
+        return "\n\n".join(lines)
+
+    def ask(self, project_path, question, history=None, requirement=None):
         """
         Understand the project and answer the user's question.
+
+        history: earlier chat messages [{"role", "content"}, ...]
+        requirement: the original requirement the project was built from
         """
 
         print("\nAnalyzing PHP project...")
@@ -86,6 +115,13 @@ IMPORTANT RULES:
 6. Mention relevant file paths when possible.
 7. Keep technical explanations clear and structured.
 8. Do not modify or generate code unless the user explicitly asks.
+9. Use the earlier conversation to understand follow-up questions.
+
+ORIGINAL PROJECT REQUIREMENT:
+{requirement or "Not available."}
+
+EARLIER CONVERSATION:
+{self.format_history(history)}
 
 USER QUESTION:
 {question}
@@ -117,12 +153,10 @@ Only include sections that are relevant to the question.
 """
 
         print("Sending project context to Gemini...")
-        print(
-            "Model priority: Gemini 3.6 Flash -> Gemini 3.5 Flash"
-        )
 
         result = self.model_manager.generate(
-            prompt
+            prompt,
+            max_output_tokens=self.MAX_OUTPUT_TOKENS
         )
 
         if not result.get("success"):

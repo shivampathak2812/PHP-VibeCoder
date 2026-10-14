@@ -1,11 +1,15 @@
 from pathlib import Path
 
 from agents.gemini_model_manager import GeminiModelManager
+from agents.project_writer import ProjectWriter
 
 
 class PHPDebugAgent:
-    def __init__(self):
-        self.model_manager = GeminiModelManager()
+
+    MAX_OUTPUT_TOKENS = 16384
+
+    def __init__(self, api_key=None):
+        self.model_manager = GeminiModelManager(api_key=api_key)
 
     def read_file(self, file_path):
         path = Path(file_path)
@@ -54,9 +58,10 @@ code block.
 Do not include explanations outside the code block.
 """
 
-        print("\nTrying Gemini 3.6 Flash -> Gemini 3.5 Flash...")
-
-        result = self.model_manager.generate(prompt)
+        result = self.model_manager.generate(
+            prompt,
+            max_output_tokens=self.MAX_OUTPUT_TOKENS
+        )
 
         if not result.get("success"):
             raise RuntimeError(
@@ -75,6 +80,80 @@ Do not include explanations outside the code block.
             )
 
         return corrected_code
+
+    def debug_files(self, project_dir, failures):
+        """
+        Fix several broken files with ONE Gemini request.
+
+        failures: list of {"file": absolute_path, "error": message}
+        Returns: {absolute_path: corrected_code}
+        """
+        project_dir = Path(project_dir).resolve()
+
+        sections = []
+
+        for failure in failures:
+
+            path = Path(failure["file"]).resolve()
+            relative = path.relative_to(project_dir).as_posix()
+
+            sections.append(
+                f"""FILE: {relative}
+PHP ERROR:
+{failure["error"]}
+
+CURRENT CODE:
+```php
+{self.read_file(path)}
+```
+"""
+            )
+
+        prompt = f"""
+You are an expert PHP 8.x debugging agent.
+
+PHP syntax validation (php -l) failed for the files below.
+Fix every file: keep the original functionality, use valid
+PHP 8.x syntax and make no unrelated changes.
+
+{chr(10).join(sections)}
+
+Return EVERY file listed above in this exact format, with the
+complete corrected code and nothing else:
+
+FILE: path/of/file.php
+```php
+<complete corrected code>
+```
+"""
+
+        result = self.model_manager.generate(
+            prompt,
+            max_output_tokens=self.MAX_OUTPUT_TOKENS
+        )
+
+        if not result.get("success"):
+            raise RuntimeError(
+                f"Gemini debugging failed: {result.get('error')}"
+            )
+
+        print(f"DEBUG MODEL USED: {result['model']}")
+
+        writer = ProjectWriter()
+
+        fixed = {}
+
+        for file_data in writer.extract_files(result["response"]):
+
+            relative = writer.validate_path(file_data["path"])
+            full_path = (project_dir / relative).resolve()
+
+            if not file_data["content"]:
+                continue
+
+            fixed[str(full_path)] = file_data["content"]
+
+        return fixed
 
     def extract_code(self, response):
         lines = response.splitlines()

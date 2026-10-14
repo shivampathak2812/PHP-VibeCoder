@@ -4,10 +4,10 @@ from agents.gemini_model_manager import GeminiModelManager
 
 class RAGAgent:
 
-    def __init__(self, top_k=3):
+    def __init__(self, top_k=3, api_key=None):
 
         self.context_builder = PHPContextBuilder(top_k=top_k)
-        self.model_manager = GeminiModelManager()
+        self.model_manager = GeminiModelManager(api_key=api_key)
 
     def answer(self, query):
 
