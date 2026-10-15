@@ -53,27 +53,84 @@ class PHPExplainAgent:
 
         return "\n\n".join(lines)
 
+    def _search_query(self, question, history):
+        """
+        Text used to look up PHP docs. A follow-up such as "what are
+        its disadvantages" says nothing about the topic, so the user's
+        earlier questions are added to it.
+        """
+
+        if not history:
+            return question
+
+        earlier = [
+            (m.get("content") or "").strip()
+            for m in history
+            if m.get("role") == "user"
+        ]
+
+        return " ".join(earlier[-2:] + [question])[:500]
+
     def build_prompt(self, question, history=None):
         """
         history: earlier messages [{"role", "content"}, ...] when this
         is a follow-up question in the same chat.
         """
 
-        rag_context = self.get_rag_context(question)
+        rag_context = self.get_rag_context(
+            self._search_query(question, history)
+        )
 
         conversation = self.format_history(history)
 
+        shared_rules = """
+- Reply in the same language style the user used
+  (English, Hindi, or Hinglish).
+- Use code only to illustrate: SHORT snippets, each under 25 lines.
+- Do NOT create a full project, folder structure, FILE: sections,
+  CSS, or complete pages.
+- Use PDO with prepared statements for database examples.
+- Do not put passwords or secrets directly in examples; mention
+  environment variables or a config file instead."""
+
+        # ----------------------------------------------------------
+        # FOLLOW-UP: answer only the new question
+        # ----------------------------------------------------------
+
         if conversation:
-            conversation = f"""
-EARLIER CONVERSATION (the new question may refer to it, e.g. "this",
-"that example", "explain it more simply"):
+            return f"""
+You are a PHP teacher in an ongoing chat.
+
+EARLIER CONVERSATION:
 {conversation}
+
+NEW QUESTION (it may refer to the conversation above with words like
+"it", "this", "that example"):
+{question}
+
+PHP DOCUMENTATION (use as reference):
+{rag_context}
+
+RULES:
+- Answer ONLY the new question. If it asks for disadvantages, give
+  only the disadvantages; if it asks for an example, give only the
+  example; and so on.
+- Do NOT repeat or re-explain what was already said earlier. No
+  "What it is" / "How it works" sections unless the new question
+  asks for them.
+- Match the length to the question: a narrow question gets a short,
+  focused answer.
+- No closing line suggesting a project.{shared_rules}
 """
+
+        # ----------------------------------------------------------
+        # FIRST QUESTION
+        # ----------------------------------------------------------
 
         return f"""
 You are a PHP teacher. The user asked a question and wants an
 EXPLANATION, not a project.
-{conversation}
+
 USER QUESTION:
 {question}
 
@@ -81,25 +138,18 @@ PHP DOCUMENTATION (use as reference):
 {rag_context}
 
 RULES:
-- Reply in the same language style the user used
-  (English, Hindi, or Hinglish).
-- Start with the explanation in plain words.
-- Use code only to illustrate: one or two SHORT snippets,
-  each under 25 lines.
-- Do NOT create a full project, folder structure, FILE: sections,
-  CSS, or complete pages.
-- Use PDO with prepared statements for database examples.
-- Do not put passwords or secrets directly in examples; mention
-  environment variables or a config file instead.
+- Answer exactly what was asked. If the question is narrow (only the
+  disadvantages, only a difference, only one function), answer just
+  that, briefly, and skip the structure below.
+- For a broad "what is / explain X" question, use this structure:
+  1. What it is (2-4 sentences)
+  2. How it works (short numbered steps)
+  3. Small code example
+  4. Common mistakes (2-3 bullets){shared_rules}
 
-STRUCTURE:
-1. What it is (2-4 sentences)
-2. How it works (short numbered steps)
-3. Small code example
-4. Common mistakes (2-3 bullets)
-
-End with one line: if the user wants a full working project,
-they can ask for it, for example "create a PHP project that ...".
+For a broad question, end with one line: if the user wants a full
+working project, they can ask for it, for example
+"create a PHP project that ...".
 """
 
     def explain_stream(self, prompt):
