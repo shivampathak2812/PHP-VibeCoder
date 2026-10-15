@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from agents.gemini_model_manager import GeminiModelManager
+from agents.gemini_model_manager import GeminiModelManager, TASK_LIGHT
 from agents.project_analyzer import PHPProjectAnalyzer
 from rag.context_builder import PHPContextBuilder
 
@@ -172,7 +172,8 @@ Only include sections that are relevant to the question.
 
         yield from self.model_manager.generate_stream(
             prompt,
-            max_output_tokens=self.MAX_OUTPUT_TOKENS
+            max_output_tokens=self.MAX_OUTPUT_TOKENS,
+            task=TASK_LIGHT
         )
 
     def ask(self, project_path, question, history=None, requirement=None):
@@ -194,7 +195,8 @@ Only include sections that are relevant to the question.
 
         result = self.model_manager.generate(
             prompt,
-            max_output_tokens=self.MAX_OUTPUT_TOKENS
+            max_output_tokens=self.MAX_OUTPUT_TOKENS,
+            task=TASK_LIGHT
         )
 
         if not result.get("success"):

@@ -1,5 +1,5 @@
 from rag.context_builder import PHPContextBuilder
-from agents.gemini_model_manager import GeminiModelManager
+from agents.gemini_model_manager import GeminiModelManager, TASK_LIGHT
 
 
 class RAGAgent:
@@ -37,9 +37,9 @@ Instructions:
 
         # Step 3: Send context + question to Gemini
         print("\nGenerating RAG answer...")
-        print("Model priority: Gemini 3.6 Flash -> Gemini 3.5 Flash")
+        print("Model priority: Groq -> NVIDIA -> Gemini")
 
-        result = self.model_manager.generate(prompt)
+        result = self.model_manager.generate(prompt, task=TASK_LIGHT)
 
         if not result.get("success"):
             raise RuntimeError(

@@ -1,8 +1,12 @@
 """
-Free fallback LLM providers, used only when every Gemini model fails
-(quota used up, overloaded, ...).
+Free OpenAI-compatible LLM providers (Groq, NVIDIA NIM).
 
-Order: Groq -> NVIDIA NIM.
+GeminiModelManager uses them in two ways:
+
+* light tasks (explain, chat, intent classification): tried FIRST, so
+  the small Gemini daily quota is saved for project generation;
+* heavy tasks (generate, refactor, debug): tried only when every
+  Gemini model has failed.
 
 Both speak the OpenAI "chat/completions" format, so plain HTTP is
 enough: no extra Python package is needed.
@@ -12,12 +16,17 @@ Keys (put them in .env or Streamlit secrets):
     GROQ_API_KEY=...        https://console.groq.com/keys
     NVIDIA_API_KEY=...      https://build.nvidia.com
 
-Optional model overrides:
+Several models per provider (comma separated, biggest first). Free
+limits are usually per model, so every extra model adds quota:
 
-    GROQ_MODEL=openai/gpt-oss-120b
-    NVIDIA_MODEL=nvidia/nemotron-3-super-120b-a12b
+    GROQ_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b
+    NVIDIA_MODELS=nvidia/nemotron-3-super-120b-a12b
 
-A provider without a key is skipped silently.
+The old single-model settings GROQ_MODEL / NVIDIA_MODEL still work.
+
+A provider without a key is skipped silently. A model the provider
+does not know (HTTP 404) is skipped for the rest of the session, so a
+wrong name only costs one request.
 
 Note: free tiers may log prompts or use them for training.
 Never put passwords or secrets in a prompt.
@@ -34,19 +43,23 @@ PROVIDERS = [
     {
         "name": "groq",
         "key_env": "GROQ_API_KEY",
+        "models_env": "GROQ_MODELS",
         "model_env": "GROQ_MODEL",
-        "default_model": "openai/gpt-oss-120b",
+        "default_models": [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+        ],
         "url": "https://api.groq.com/openai/v1/chat/completions",
-        # gpt-oss is a reasoning model; keep its hidden thinking short.
-        "extra": {"reasoning_effort": "low"},
     },
     {
         "name": "nvidia",
         "key_env": "NVIDIA_API_KEY",
+        "models_env": "NVIDIA_MODELS",
         "model_env": "NVIDIA_MODEL",
-        "default_model": "nvidia/nemotron-3-super-120b-a12b",
+        "default_models": [
+            "nvidia/nemotron-3-super-120b-a12b",
+        ],
         "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-        "extra": {},
     },
 ]
 
@@ -58,6 +71,7 @@ MAX_OUTPUT_TOKENS = 32768
 
 REQUEST_TIMEOUT_SECONDS = 180
 DEFAULT_COOLDOWN_SECONDS = 60
+MAX_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
 def _read_setting(name):
@@ -77,15 +91,65 @@ def _read_setting(name):
     return str(value).strip() if value else None
 
 
+def _model_list(provider):
+    """GROQ_MODELS (list) > GROQ_MODEL (single) > defaults."""
+
+    value = _read_setting(provider["models_env"])
+
+    if value:
+        models = [m.strip() for m in value.split(",") if m.strip()]
+
+        if models:
+            return models
+
+    single = _read_setting(provider["model_env"])
+
+    if single:
+        return [single]
+
+    return list(provider["default_models"])
+
+
+def _extra_params(model):
+    """Optional request parameters that only some models accept."""
+
+    # gpt-oss is a reasoning model; keep its hidden thinking short.
+    if "gpt-oss" in model:
+        return {"reasoning_effort": "low"}
+
+    # Qwen on Groq otherwise prints its <think>...</think> text inside
+    # the answer.
+    if "qwen" in model:
+        return {"reasoning_format": "hidden"}
+
+    return {}
+
+
+# Models whose output limit is below MAX_OUTPUT_TOKENS. Asking for more
+# makes the provider reject the whole request (HTTP 400).
+MODEL_MAX_OUTPUT_TOKENS = {
+    "qwen/qwen3.8-27b": 16384,
+}
+
+
 class FallbackProviders:
 
-    # Shared across instances: {provider_name: skip_until_timestamp}
+    # All shared across instances (one Streamlit process):
+    # {"provider/model": skip_until_timestamp}
     _cooldowns = {}
+
+    # Models that returned 404 (wrong / retired name).
+    _unavailable = set()
+
+    # Models that rejected the optional extra parameters (HTTP 400).
+    _no_extra = set()
 
     def __init__(self):
         self.providers = []
         self.last_model = None
 
+        # One entry per (provider, model), in priority order:
+        # all Groq models, then all NVIDIA models.
         for provider in PROVIDERS:
 
             key = _read_setting(provider["key_env"])
@@ -93,22 +157,67 @@ class FallbackProviders:
             if not key:
                 continue
 
-            self.providers.append(
-                {
-                    **provider,
-                    "key": key,
-                    "model": (
-                        _read_setting(provider["model_env"])
-                        or provider["default_model"]
-                    ),
-                }
-            )
+            for model in _model_list(provider):
+
+                self.providers.append(
+                    {
+                        "name": provider["name"],
+                        "url": provider["url"],
+                        "key": key,
+                        "model": model,
+                        "label": f"{provider['name']}/{model}",
+                        "extra": _extra_params(model),
+                    }
+                )
 
     @property
     def available(self):
         return bool(self.providers)
 
     # ------------------------------------------------------------
+
+    def _ordered(self, small_first=False):
+        """
+        Entries that are worth trying right now.
+
+        small_first: inside each provider, try the smaller models first
+        (lists are written biggest first). Used for tiny jobs such as
+        intent classification, where a big model is wasted quota.
+        """
+
+        entries = list(self.providers)
+
+        if small_first:
+            names = []
+
+            for entry in entries:
+                if entry["name"] not in names:
+                    names.append(entry["name"])
+
+            entries = [
+                entry
+                for name in names
+                for entry in reversed(
+                    [e for e in self.providers if e["name"] == name]
+                )
+            ]
+
+        result = []
+
+        for entry in entries:
+
+            label = entry["label"]
+
+            if label in self._unavailable:
+                continue
+
+            if time.time() < self._cooldowns.get(label, 0):
+                print(f"Skipping {label}: cooling down.")
+                continue
+
+            result.append(entry)
+
+        return result
 
     def _build_prompt(
         self,
@@ -146,7 +255,7 @@ class FallbackProviders:
             f"({os.path.basename(attachment_path)}):\n{content}"
         )
 
-    def _request(self, provider, prompt, max_output_tokens, use_extra, stream):
+    def _request(self, provider, prompt, max_output_tokens, stream):
 
         payload = {
             "model": provider["model"],
@@ -155,14 +264,17 @@ class FallbackProviders:
             ],
             "max_tokens": min(
                 max(max_output_tokens or 4096, MIN_OUTPUT_TOKENS),
-                MAX_OUTPUT_TOKENS
+                MODEL_MAX_OUTPUT_TOKENS.get(
+                    provider["model"],
+                    MAX_OUTPUT_TOKENS
+                )
             ),
         }
 
         if stream:
             payload["stream"] = True
 
-        if use_extra:
+        if provider["label"] not in self._no_extra:
             payload.update(provider["extra"])
 
         request = urllib.request.Request(
@@ -182,13 +294,12 @@ class FallbackProviders:
             timeout=REQUEST_TIMEOUT_SECONDS
         )
 
-    def _call(self, provider, prompt, max_output_tokens, use_extra=True):
+    def _call(self, provider, prompt, max_output_tokens):
 
         with self._request(
             provider,
             prompt,
             max_output_tokens,
-            use_extra,
             stream=False
         ) as response:
 
@@ -207,20 +318,13 @@ class FallbackProviders:
 
         return text
 
-    def _call_stream(
-        self,
-        provider,
-        prompt,
-        max_output_tokens,
-        use_extra=True
-    ):
+    def _call_stream(self, provider, prompt, max_output_tokens):
         """Yield text pieces from an OpenAI-style server-sent stream."""
 
         with self._request(
             provider,
             prompt,
             max_output_tokens,
-            use_extra,
             stream=True
         ) as response:
 
@@ -254,19 +358,57 @@ class FallbackProviders:
                 if text:
                     yield text
 
-    def _remember_rate_limit(self, name, error):
+    def _handle_http_error(self, provider, error):
+        """
+        Decide what an HTTP error means for this model.
+        Returns True if the same model should be retried once.
+        """
 
-        wait = DEFAULT_COOLDOWN_SECONDS
+        label = provider["label"]
+
+        body = ""
 
         try:
-            wait = float(error.headers.get("Retry-After"))
+            body = error.read().decode("utf-8", "replace")[:300]
         except Exception:
             pass
 
-        self._cooldowns[name] = time.time() + min(
-            wait,
-            24 * 60 * 60
-        )
+        print(f"FAILED: {label} HTTP {error.code} {body}")
+
+        # An unsupported optional parameter: retry once without it,
+        # and never send it to this model again.
+        if (
+            error.code == 400
+            and provider["extra"]
+            and label not in self._no_extra
+        ):
+            self._no_extra.add(label)
+            return True
+
+        # Wrong or retired model name.
+        if error.code == 404:
+            self._unavailable.add(label)
+
+        # Rate limit: only THIS model cools down; the provider's other
+        # models have their own quota and are still tried.
+        elif error.code == 429:
+
+            wait = DEFAULT_COOLDOWN_SECONDS
+
+            try:
+                wait = float(error.headers.get("Retry-After"))
+            except Exception:
+                pass
+
+            self._cooldowns[label] = time.time() + min(
+                wait,
+                MAX_COOLDOWN_SECONDS
+            )
+
+        # 413 (prompt larger than this model's per-minute token limit)
+        # and other errors: just move on to the next model.
+
+        return False
 
     # ------------------------------------------------------------
 
@@ -275,7 +417,8 @@ class FallbackProviders:
         prompt,
         attachment_path=None,
         attachment_type=None,
-        max_output_tokens=None
+        max_output_tokens=None,
+        small_first=False
     ):
         """
         Same result shape as GeminiModelManager.generate():
@@ -309,20 +452,11 @@ class FallbackProviders:
 
         errors = []
 
-        for provider in self.providers:
+        for provider in self._ordered(small_first):
 
-            name = provider["name"]
+            label = provider["label"]
 
-            if time.time() < self._cooldowns.get(name, 0):
-                print(f"Skipping {name}: cooling down.")
-                errors.append(f"{name}: cooling down")
-                continue
-
-            print(
-                f"\nTrying fallback: {name} / {provider['model']}"
-            )
-
-            use_extra = True
+            print(f"\nTrying fallback: {label}")
 
             for attempt in (1, 2):
 
@@ -331,51 +465,33 @@ class FallbackProviders:
                     text = self._call(
                         provider,
                         full_prompt,
-                        max_output_tokens,
-                        use_extra=use_extra
+                        max_output_tokens
                     )
 
-                    print(f"SUCCESS: {name}")
+                    print(f"SUCCESS: {label}")
+
+                    self.last_model = label
 
                     return {
                         "success": True,
-                        "model": f"{name}/{provider['model']}",
+                        "model": label,
                         "response": text,
                     }
 
                 except urllib.error.HTTPError as e:
 
-                    body = ""
-
-                    try:
-                        body = e.read().decode("utf-8", "replace")[:300]
-                    except Exception:
-                        pass
-
-                    print(f"FAILED: {name} HTTP {e.code} {body}")
-
-                    # An unsupported optional parameter: retry once
-                    # without it.
-                    if (
-                        e.code == 400
-                        and use_extra
-                        and provider["extra"]
-                    ):
-                        use_extra = False
+                    if self._handle_http_error(provider, e):
                         continue
 
-                    if e.code == 429:
-                        self._remember_rate_limit(name, e)
-
-                    errors.append(f"{name}: HTTP {e.code}")
+                    errors.append(f"{label}: HTTP {e.code}")
 
                     break
 
                 except Exception as e:
 
-                    print(f"FAILED: {name} {e}")
+                    print(f"FAILED: {label} {e}")
 
-                    errors.append(f"{name}: {e}")
+                    errors.append(f"{label}: {e}")
 
                     break
 
@@ -383,7 +499,10 @@ class FallbackProviders:
             "success": False,
             "model": None,
             "response": None,
-            "error": "Fallback providers failed: " + "; ".join(errors),
+            "error": (
+                "Fallback providers failed: "
+                + ("; ".join(errors) or "all models cooling down")
+            ),
         }
 
 
@@ -396,12 +515,13 @@ class FallbackProviders:
         prompt,
         attachment_path=None,
         attachment_type=None,
-        max_output_tokens=None
+        max_output_tokens=None,
+        small_first=False
     ):
         """
         Yields text pieces as they arrive. After the first piece,
         self.last_model holds the model name. Raises RuntimeError if
-        no provider could start an answer.
+        no model could start an answer.
         """
 
         self.last_model = None
@@ -425,20 +545,13 @@ class FallbackProviders:
 
         errors = []
 
-        for provider in self.providers:
+        for provider in self._ordered(small_first):
 
-            name = provider["name"]
+            label = provider["label"]
 
-            if time.time() < self._cooldowns.get(name, 0):
-                errors.append(f"{name}: cooling down")
-                continue
-
-            print(
-                f"\nStreaming from fallback: {name} / {provider['model']}"
-            )
+            print(f"\nStreaming from fallback: {label}")
 
             started = False
-            use_extra = True
 
             for attempt in (1, 2):
 
@@ -447,22 +560,19 @@ class FallbackProviders:
                     for text in self._call_stream(
                         provider,
                         full_prompt,
-                        max_output_tokens,
-                        use_extra=use_extra
+                        max_output_tokens
                     ):
 
                         if not started:
                             started = True
-                            self.last_model = (
-                                f"{name}/{provider['model']}"
-                            )
+                            self.last_model = label
 
                         yield text
 
                     if started:
                         return
 
-                    errors.append(f"{name}: empty answer")
+                    errors.append(f"{label}: empty answer")
 
                     break
 
@@ -471,20 +581,10 @@ class FallbackProviders:
                     if started:
                         raise
 
-                    print(f"FAILED: {name} HTTP {e.code}")
-
-                    if (
-                        e.code == 400
-                        and use_extra
-                        and provider["extra"]
-                    ):
-                        use_extra = False
+                    if self._handle_http_error(provider, e):
                         continue
 
-                    if e.code == 429:
-                        self._remember_rate_limit(name, e)
-
-                    errors.append(f"{name}: HTTP {e.code}")
+                    errors.append(f"{label}: HTTP {e.code}")
 
                     break
 
@@ -493,12 +593,13 @@ class FallbackProviders:
                     if started:
                         raise
 
-                    print(f"FAILED: {name} {e}")
+                    print(f"FAILED: {label} {e}")
 
-                    errors.append(f"{name}: {e}")
+                    errors.append(f"{label}: {e}")
 
                     break
 
         raise RuntimeError(
-            "Fallback providers failed: " + "; ".join(errors)
+            "Fallback providers failed: "
+            + ("; ".join(errors) or "all models cooling down")
         )

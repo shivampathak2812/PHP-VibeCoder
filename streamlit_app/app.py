@@ -35,6 +35,7 @@ from streamlit_app.history_store import (
     save_explanation,
     load_explanation,
     list_explanations,
+    append_explanation_message,
 )
 
 
@@ -55,7 +56,6 @@ UPLOADED_FILES_DIR = os.path.join(
 os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
 
 # Cooldown when everyone shares the app's Gemini key.
-# Users who enter their own key are not limited.
 GENERATIONS_PER_WINDOW = 3
 GENERATION_WINDOW_SECONDS = 10 * 60
 
@@ -81,7 +81,6 @@ defaults = {
     "upload_message": None,
     "active_chat": None,
     "active_explanation": None,
-    "user_api_key": "",
     "generation_times": [],
 }
 
@@ -175,14 +174,6 @@ def read_project_file(
         return f"Unable to read file:\n{e}"
 
 
-def get_user_api_key():
-    """The user's own Gemini key from the sidebar, or None."""
-
-    key = (st.session_state.get("user_api_key") or "").strip()
-
-    return key or None
-
-
 def recent_generation_times():
 
     now = time.time()
@@ -199,10 +190,6 @@ def recent_generation_times():
 
 
 def generations_left():
-    """None means unlimited (user brought their own key)."""
-
-    if get_user_api_key():
-        return None
 
     return max(
         0,
@@ -263,6 +250,14 @@ def build_generation_summary(result, files):
         lines.append(
             "PHP is not installed here, so syntax validation was skipped."
         )
+    elif result.get("success"):
+        lines.append(
+            f"All PHP files passed syntax validation "
+            f"(attempt {result.get('attempts', 1)})."
+        )
+
+    if result.get("error"):
+        lines.append(f"Problem: `{result.get('error')}`")
 
     if result.get("model"):
         lines.append(f"Model: `{result.get('model')}`")
@@ -273,7 +268,8 @@ def build_generation_summary(result, files):
         )
 
     lines.append(
-        "Ask me anything about this project below."
+        "Ask me anything about this project in the box below: "
+        "how a file works, where to change something, how to run it..."
     )
 
     return "\n\n".join(lines)
@@ -305,9 +301,8 @@ def show_error(message, error):
     ):
 
         st.warning(
-            "Gemini quota / rate limit reached. "
-            "Please wait a bit and try again, or enter your own "
-            "free Gemini API key in the sidebar (🔑) to keep going."
+            "All AI models are busy or out of quota right now. "
+            "Please wait a bit and try again."
         )
 
         return
@@ -315,8 +310,8 @@ def show_error(message, error):
     if "GEMINI_API_KEY not found" in error_text:
 
         st.warning(
-            "No Gemini API key configured. Enter your own key "
-            "in the sidebar (🔑)."
+            "No Gemini API key configured on the server. "
+            "Add GEMINI_API_KEY to .env or Streamlit secrets."
         )
 
         return
@@ -325,6 +320,59 @@ def show_error(message, error):
 
     st.exception(error)
 
+
+
+# How often the live preview is redrawn while a project streams in.
+LIVE_PREVIEW_INTERVAL_SECONDS = 0.5
+
+# Only the end of the answer is shown, so redrawing stays fast.
+LIVE_PREVIEW_TAIL_CHARS = 2500
+
+FILE_LINE_PATTERN = re.compile(r"^FILE:\s*(\S+)", re.MULTILINE)
+
+
+def make_live_preview(live, status, progress):
+    """
+    Returns a callback for PHPVibeCoder.run(on_progress=...).
+    Shows which files are done and the code being written right now.
+    """
+
+    last_draw = [0.0]
+
+    def on_progress(text):
+
+        now = time.time()
+
+        if now - last_draw[0] < LIVE_PREVIEW_INTERVAL_SECONDS:
+            return
+
+        last_draw[0] = now
+
+        files = FILE_LINE_PATTERN.findall(text)
+
+        if files:
+            status.info(
+                f"Writing **{files[-1]}** "
+                f"({len(files)} file(s) so far)..."
+            )
+        else:
+            status.info("Planning the project...")
+
+        # Real total is unknown: creep from 20% towards 85%.
+        progress.progress(min(20 + len(files) * 5, 85))
+
+        tail = text[-LIVE_PREVIEW_TAIL_CHARS:]
+
+        with live.container():
+
+            if files:
+                st.caption(
+                    "Files: " + ", ".join(f"`{f}`" for f in files)
+                )
+
+            st.code(tail)
+
+    return on_progress
 
 
 def detect_request_type(text, choice):
@@ -347,17 +395,13 @@ def detect_request_type(text, choice):
 
     return classify_intent(
         text,
-        model_manager=GeminiModelManager(
-            api_key=get_user_api_key()
-        )
+        model_manager=GeminiModelManager()
     )
 
 
 def show_explanation(question):
 
-    agent = PHPExplainAgent(
-        api_key=get_user_api_key()
-    )
+    agent = PHPExplainAgent()
 
     # Looking up PHP docs happens before the first word appears.
     try:
@@ -393,15 +437,17 @@ def show_explanation(question):
         + (f" Model: {model}" if model else "")
     )
 
-    # Saved to the sidebar so it can be reopened later.
+    # Saved to the sidebar so it can be reopened (and continued) later.
     try:
-        save_explanation(
+        return save_explanation(
             question,
             answer,
             model
         )
     except Exception as e:
         st.caption(f"Could not save this explanation: {e}")
+
+    return None
 
 
 
@@ -943,25 +989,6 @@ st.sidebar.markdown(
     "---"
 )
 
-with st.sidebar.expander(
-    "🔑 Your Gemini API key (optional)"
-):
-
-    st.text_input(
-        "Gemini API key",
-        type="password",
-        key="user_api_key",
-        placeholder="AIza...",
-        label_visibility="collapsed"
-    )
-
-    st.caption(
-        "Use your own free key from "
-        "[Google AI Studio](https://aistudio.google.com/apikey) "
-        "for unlimited generations. It stays in this browser "
-        "session only and is never saved."
-    )
-
 # Filled at the end of the script so the count is up to date.
 usage_placeholder = st.sidebar.empty()
 
@@ -974,18 +1001,10 @@ def render_usage_sidebar():
 
     left = generations_left()
 
-    if left is None:
-
-        usage_placeholder.caption(
-            "✅ Using your own API key: no generation limit."
-        )
-
-    else:
-
-        usage_placeholder.caption(
-            f"Generations left: {left}/{GENERATIONS_PER_WINDOW} "
-            f"(resets every {GENERATION_WINDOW_SECONDS // 60} min)"
-        )
+    usage_placeholder.caption(
+        f"Generations left: {left}/{GENERATIONS_PER_WINDOW} "
+        f"(resets every {GENERATION_WINDOW_SECONDS // 60} min)"
+    )
 
 
 def render_history_sidebar():
@@ -1103,13 +1122,63 @@ def render_explanation(explanation_id):
             record.get("answer", "")
         )
 
-    st.caption(
-        f"Saved {record.get('created_at', '')}"
-        + (
-            f" • Model: {record['model']}"
-            if record.get("model")
-            else ""
-        )
+        if record.get("model"):
+            st.caption(f"Model: {record['model']}")
+
+    for message in record.get("messages", []):
+
+        with st.chat_message(message["role"]):
+
+            st.markdown(message["content"])
+
+            if message.get("model"):
+                st.caption(f"Model: {message['model']}")
+
+    question = st.chat_input(
+        "Ask a follow-up question..."
+    )
+
+    if not question:
+        return
+
+    with st.chat_message("user"):
+
+        st.markdown(question)
+
+    # The whole conversation so far, so "this" / "that example"
+    # in the new question makes sense to the model.
+    history = [
+        {"role": "user", "content": record.get("question", "")},
+        {"role": "assistant", "content": record.get("answer", "")},
+    ] + list(record.get("messages", []))
+
+    with st.chat_message("assistant"):
+
+        try:
+
+            agent = PHPExplainAgent()
+
+            with st.spinner("Searching PHP documentation..."):
+                prompt = agent.build_prompt(question, history=history)
+
+            answer = st.write_stream(
+                agent.explain_stream(prompt)
+            )
+
+        except Exception as e:
+
+            show_error("Error while answering.", e)
+
+            return
+
+        model = agent.model_manager.last_model
+
+        if model:
+            st.caption(f"Model: {model}")
+
+    append_explanation_message(explanation_id, "user", question)
+    append_explanation_message(
+        explanation_id, "assistant", answer, model=model
     )
 
 
@@ -1192,9 +1261,7 @@ def render_chat(project):
 
         try:
 
-            agent = PHPCodeUnderstandingAgent(
-                api_key=get_user_api_key()
-            )
+            agent = PHPCodeUnderstandingAgent()
 
             with st.spinner(
                 "Analyzing project..."
@@ -1258,6 +1325,11 @@ elif mode == "Generate Project":
         "project to build it. Projects are saved automatically."
     )
 
+    # A finished request empties the box for the next one. This must
+    # happen before the widget is created.
+    if st.session_state.pop("clear_requirement", False):
+        st.session_state.requirement_text_area = ""
+
     requirement = st.text_area(
         "Ask or Describe",
         height=180,
@@ -1307,6 +1379,9 @@ elif mode == "Generate Project":
         key="generate_project_button"
     )
 
+    # Set when an answer is ready and its chat should be opened.
+    switch_view = False
+
     if generate:
 
         if not requirement.strip():
@@ -1320,9 +1395,15 @@ elif mode == "Generate Project":
             "Auto"
         ) == EXPLAIN:
 
-            # Explanation only: no project, no files, no history,
-            # and it does not use up a generation.
-            show_explanation(requirement)
+            # Explanation only: no project, no files, and it does not
+            # use up a generation. Then open it as a chat so follow-up
+            # questions can be asked below.
+            explanation_id = show_explanation(requirement)
+
+            if explanation_id:
+                open_explanation(explanation_id)
+                st.session_state.clear_requirement = True
+                switch_view = True
 
         elif generations_left() == 0:
 
@@ -1334,8 +1415,7 @@ elif mode == "Generate Project":
             st.warning(
                 f"You've used all {GENERATIONS_PER_WINDOW} free "
                 f"generations for now. Try again in about "
-                f"{wait_minutes} minute(s), or enter your own free "
-                "Gemini API key in the sidebar (🔑) for no limit."
+                f"{wait_minutes} minute(s)."
             )
 
         else:
@@ -1350,6 +1430,9 @@ elif mode == "Generate Project":
             )
 
             status = st.empty()
+
+            # Live view of the project while the model writes it.
+            live = st.empty()
 
             try:
 
@@ -1366,8 +1449,7 @@ elif mode == "Generate Project":
                 )
 
                 coder = PHPVibeCoder(
-                    max_retries=3,
-                    api_key=get_user_api_key()
+                    max_retries=3
                 )
 
                 # ------------------------------------------------
@@ -1395,18 +1477,24 @@ elif mode == "Generate Project":
                     requirement=requirement,
                     project_name=project_name,
                     attachment_path=attachment_path,
-                    attachment_type=attachment_type
+                    attachment_type=attachment_type,
+                    on_progress=make_live_preview(
+                        live,
+                        status,
+                        progress
+                    )
                 )
+
+                live.empty()
 
                 progress.progress(
                     100
                 )
 
                 # Only count runs that produced a project.
-                if not get_user_api_key():
-                    st.session_state.generation_times.append(
-                        time.time()
-                    )
+                st.session_state.generation_times.append(
+                    time.time()
+                )
 
                 st.session_state.generation_response = result
 
@@ -1435,126 +1523,14 @@ elif mode == "Generate Project":
                     model=result.get("model")
                 )
 
-                st.button(
-                    "💬 Open chat for this project",
-                    on_click=open_chat,
-                    args=(project,),
-                    key="open_generated_chat"
-                )
+                # Open the project's chat right away, like ChatGPT:
+                # the summary is the first answer and the question
+                # box sits at the bottom for follow-ups.
+                open_chat(project)
 
-                # --------------------------------------------
-                # SUCCESS
-                # --------------------------------------------
+                st.session_state.clear_requirement = True
 
-                if result.get("success"):
-
-                    st.success(
-                        "Vibe Coding completed successfully."
-                    )
-
-                    attempts = result.get(
-                        "attempts",
-                        0
-                    )
-
-                    if result.get("validated") is False:
-
-                        st.info(
-                            "PHP is not installed on this server, "
-                            "so syntax validation was skipped."
-                        )
-
-                    else:
-
-                        st.info(
-                            f"Validation completed in {attempts} attempt(s)."
-                        )
-
-                    project = st.session_state.current_project
-
-                    files = get_project_files(
-                        project
-                    )
-
-                    # --------------------------------------------
-                    # WORKFLOW
-                    # --------------------------------------------
-
-                    st.subheader(
-                        "Vibe Coding Workflow"
-                    )
-
-                    c1, c2, c3, c4 = st.columns(4)
-
-                    c1.success(
-                        "Generated"
-                    )
-
-                    c2.success(
-                        "Tested"
-                    )
-
-                    c3.success(
-                        "Validated"
-                    )
-
-                    c4.success(
-                        "Delivered"
-                    )
-
-                    # --------------------------------------------
-                    # STRUCTURE
-                    # --------------------------------------------
-
-                    display_file_tree(
-                        files
-                    )
-
-                    # --------------------------------------------
-                    # COMPLETE FILE CONTENT
-                    # --------------------------------------------
-
-                    st.subheader(
-                        "Generated Project Files"
-                    )
-
-                    for file in files:
-
-                        content = read_project_file(
-                            project,
-                            file
-                        )
-
-                        with st.expander(
-                            f"📄 {file}"
-                        ):
-
-                            st.code(
-                                content,
-                                language=get_language(
-                                    file
-                                )
-                            )
-
-                    st.divider()
-
-                    st.success(
-                        f"Project `{project}` is ready."
-                    )
-
-                else:
-
-                    st.error(
-                        "Vibe Coder could not complete the project."
-                    )
-
-                    if result.get("error"):
-
-                        st.code(
-                            str(
-                                result.get("error")
-                            )
-                        )
+                switch_view = True
 
             except Exception as e:
 
@@ -1562,10 +1538,16 @@ elif mode == "Generate Project":
 
                 status.empty()
 
+                live.empty()
+
                 show_error(
                     "Error while running Vibe Coder.",
                     e
                 )
+
+    # Outside the try block: st.rerun() works by raising an exception.
+    if switch_view:
+        st.rerun()
 
 
 # ============================================================
@@ -1678,9 +1660,7 @@ elif mode == "Understand Code":
 
                     try:
 
-                        agent = PHPCodeUnderstandingAgent(
-                            api_key=get_user_api_key()
-                        )
+                        agent = PHPCodeUnderstandingAgent()
 
                         answer = agent.ask(
                             project_path=os.path.join(
@@ -1783,9 +1763,7 @@ elif mode == "Refactor Code":
                         "Refactoring code with Gemini..."
                     ):
 
-                        agent = PHPRefactorAgent(
-                            api_key=get_user_api_key()
-                        )
+                        agent = PHPRefactorAgent()
 
                         refactored_code = agent.refactor_file(
                             project_path=os.path.join(

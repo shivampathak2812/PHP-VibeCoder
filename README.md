@@ -100,6 +100,38 @@ Create a `.env` file in the project root and add your Gemini key:
 GEMINI_API_KEY=your_gemini_api_key
 ```
 
+Optional free providers (recommended, they save your Gemini quota):
+
+```env
+GROQ_API_KEY=your_groq_key
+NVIDIA_API_KEY=your_nvidia_key
+
+# Several models per provider, biggest first. Limits are per model,
+# so each extra model adds quota. Check names with GET /v1/models.
+GROQ_MODELS=openai/gpt-oss-120b,openai/gpt-oss-20b
+NVIDIA_MODELS=nvidia/nemotron-3-super-120b-a12b
+```
+
+Speed setting (optional):
+
+```env
+# Gemini 3.x "thinks" before answering. low = faster (default),
+# minimal = fastest, medium/high = slower but more careful,
+# off = Google's default.
+GEMINI_THINKING_LEVEL=low
+```
+
+How requests are routed:
+
+| Task | Order |
+| --- | --- |
+| Project generation, refactor, debug | Gemini -> Groq -> NVIDIA |
+| Explain, project Q&A, RAG answers | Groq -> NVIDIA -> Gemini |
+| Intent classification | smallest Groq model -> NVIDIA -> Gemini |
+| Any request with an image | Gemini first (other models are text-only) |
+
+Each model has its own cooldown after a rate limit, so one model hitting its limit does not block the others. A model name that returns 404 is skipped for the rest of the session. A Gemini daily-quota error skips that model until midnight US Pacific time, when the quota resets.
+
 Keep this file private. Do not commit API keys or generated `.env` files to source control.
 
 ## Run the application

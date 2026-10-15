@@ -126,7 +126,9 @@ USER REQUEST:
 
     result = model_manager.generate(
         prompt,
-        max_output_tokens=8
+        max_output_tokens=8,
+        # TASK_CLASSIFY: smallest Groq / NVIDIA model first, Gemini last.
+        task="classify"
     )
 
     if result.get("success"):

@@ -3,6 +3,7 @@ import re
 import time
 import hashlib
 import mimetypes
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from google import genai
@@ -12,6 +13,52 @@ from agents.fallback_providers import FallbackProviders
 
 
 load_dotenv()
+
+
+# ----------------------------------------------------------------
+# TASK TYPES: decide which provider is tried first
+# ----------------------------------------------------------------
+
+# Project generation, refactor, debug: long, high-quality output.
+# Gemini first, then Groq, then NVIDIA.
+TASK_HEAVY = "heavy"
+
+# Explain, chat, Q&A: short answers. Groq / NVIDIA first, so the small
+# Gemini daily quota is kept for heavy tasks. Gemini is the backup.
+TASK_LIGHT = "light"
+
+# One-word answers (intent routing): like LIGHT, but the smallest
+# fallback model of each provider is tried first.
+TASK_CLASSIFY = "classify"
+
+LIGHT_TASKS = (TASK_LIGHT, TASK_CLASSIFY)
+
+
+class _GeminiFailed(Exception):
+    """Every Gemini model failed before sending any text."""
+
+
+def _seconds_until_quota_reset():
+    """
+    Gemini free-tier daily quotas reset at midnight US Pacific time.
+    Used when a "PerDay" 429 does not say how long to wait.
+    """
+
+    try:
+        from zoneinfo import ZoneInfo
+        pacific = ZoneInfo("America/Los_Angeles")
+    except Exception:
+        # Windows without the tzdata package: use PST.
+        pacific = timezone(timedelta(hours=-8))
+
+    now = datetime.now(pacific)
+
+    next_midnight = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+
+    # A few minutes extra so we don't hit the reset edge.
+    return (next_midnight - now).total_seconds() + 300
 
 
 def _get_gemini_api_key():
@@ -32,6 +79,21 @@ def _get_gemini_api_key():
         key = None
 
     return key
+
+
+def _read_env(name):
+    """Environment / .env first, then Streamlit secrets."""
+
+    value = os.getenv(name)
+
+    if not value:
+        try:
+            import streamlit as st
+            value = st.secrets.get(name)
+        except Exception:
+            value = None
+
+    return str(value).strip() if value else None
 
 
 def _get_model_list(default_models):
@@ -80,15 +142,19 @@ class GeminiModelManager:
     # Longest we wait on a 429 before moving to the next model.
     MAX_RATE_LIMIT_WAIT_SECONDS = 60
 
-    # How long a model is skipped after its quota is used up.
+    # How long a model is skipped after its per-minute quota is used up.
+    # (Daily quota: skipped until Pacific midnight, see
+    # _seconds_until_quota_reset.)
     PER_MINUTE_COOLDOWN_SECONDS = 60
-    PER_DAY_COOLDOWN_SECONDS = 60 * 60
 
     # Shared across instances: {(key_id, model): skip_until_timestamp}
     _model_cooldowns = {}
 
     # Shared across instances: models that returned 404 for a key.
     _unavailable_models = set()
+
+    # Shared across instances: models that rejected thinking_config.
+    _no_thinking_models = set()
 
     # Shared across instances: {key_id: model that last succeeded}.
     _last_good_model = {}
@@ -119,8 +185,7 @@ class GeminiModelManager:
 
         if not api_key:
             raise ValueError(
-                "GEMINI_API_KEY not found in .env or Streamlit secrets. "
-                "Add one, or enter your own Gemini API key in the sidebar."
+                "GEMINI_API_KEY not found in .env or Streamlit secrets."
             )
 
         self.client = genai.Client(
@@ -132,8 +197,8 @@ class GeminiModelManager:
             api_key.encode("utf-8")
         ).hexdigest()[:16]
 
-        # Free backup models (Groq, NVIDIA) used only if every
-        # Gemini model fails. Empty unless their keys are configured.
+        # Groq / NVIDIA models: first choice for light tasks, backup
+        # for heavy ones. Empty unless their keys are configured.
         self.fallback = FallbackProviders()
         self.last_model = None
 
@@ -257,6 +322,72 @@ Use the uploaded file as additional input for the project.
 
         return None
 
+    def _make_config(self, model, max_output_tokens):
+        """
+        Request settings for one model.
+
+        thinking_level: Gemini 3.x thinks before answering, and that
+        hidden thinking adds a lot of waiting time. "low" keeps it
+        short. Set GEMINI_THINKING_LEVEL=off to use Google's default.
+        """
+
+        options = {}
+
+        if max_output_tokens:
+            options["max_output_tokens"] = max_output_tokens
+
+        level = (_read_env("GEMINI_THINKING_LEVEL") or "low").lower()
+
+        if (
+            level not in ("off", "none", "default", "")
+            and model not in self._no_thinking_models
+        ):
+            options["thinking_config"] = types.ThinkingConfig(
+                thinking_level=level.upper()
+            )
+
+        if not options:
+            return None
+
+        return types.GenerateContentConfig(**options)
+
+    def _thinking_rejected(self, model, error_text):
+        """
+        True if the model refused thinking_config (e.g. an older 2.x
+        model). It is then never sent to that model again.
+        """
+
+        if (
+            model not in self._no_thinking_models
+            and ("400" in error_text or "INVALID_ARGUMENT" in error_text)
+            and "thinking" in error_text.lower()
+        ):
+            print(f"{model} does not accept thinking_level; retrying without it.")
+            self._no_thinking_models.add(model)
+            return True
+
+        return False
+
+    def _can_skip(self, model):
+        """
+        True if something else can answer right now (a Gemini model not
+        tried yet in this request, or Groq / NVIDIA). Then a busy model is skipped at once
+        instead of waiting for it.
+        """
+
+        if self.fallback.available:
+            return True
+
+        tried = getattr(self, "_tried_models", set())
+
+        return any(
+            other != model
+            and other not in tried
+            and (self._key_id, other) not in self._unavailable_models
+            and not self._is_cooling_down(other)
+            for other in self.models
+        )
+
     def _is_cooling_down(self, model):
 
         until = self._model_cooldowns.get(
@@ -272,13 +403,14 @@ Use the uploaded file as additional input for the project.
             time.time() + seconds
         )
 
-    def generate(
+    def _generate_gemini(
         self,
         prompt,
         attachment_path=None,
         attachment_type=None,
         max_output_tokens=None
     ):
+        """Gemini models only (no Groq / NVIDIA)."""
 
         try:
 
@@ -297,19 +429,14 @@ Use the uploaded file as additional input for the project.
                 "error": str(e),
             }
 
-        config = None
-
-        if max_output_tokens:
-            config = types.GenerateContentConfig(
-                max_output_tokens=max_output_tokens
-            )
-
         # Remember the most useful error to show the user:
         # a quota or overload error matters more than a 404
         # from a fallback model.
         rate_limit_error = None
         overload_error = None
         last_error = None
+
+        self._tried_models = set()
 
         for model in self._ordered_models():
 
@@ -321,6 +448,8 @@ Use the uploaded file as additional input for the project.
                     f"\nSkipping {model}: quota recently exhausted."
                 )
                 continue
+
+            self._tried_models.add(model)
 
             print(
                 f"\nTrying Gemini model: {model}"
@@ -336,7 +465,10 @@ Use the uploaded file as additional input for the project.
                     response = self.client.models.generate_content(
                         model=model,
                         contents=contents,
-                        config=config,
+                        config=self._make_config(
+                            model,
+                            max_output_tokens
+                        ),
                     )
 
                     print(
@@ -367,6 +499,9 @@ Use the uploaded file as additional input for the project.
                         f"Reason: {error_text}"
                     )
 
+                    if self._thinking_rejected(model, error_text):
+                        continue
+
                     # ----------------------------------------
                     # RATE LIMIT / QUOTA
                     # ----------------------------------------
@@ -384,9 +519,9 @@ Use the uploaded file as additional input for the project.
                                 f"Daily quota used up for {model}."
                             )
 
-                            # Google says how long until the quota
-                            # resets (e.g. 17 hours): skip the model
-                            # for that long instead of 1 hour.
+                            # Daily quotas reset at Pacific midnight.
+                            # Google's retryDelay here is often only
+                            # ~30s, so never skip for less than that.
                             reset_in = self._parse_retry_delay(
                                 error_text
                             )
@@ -394,8 +529,10 @@ Use the uploaded file as additional input for the project.
                             self._set_cooldown(
                                 model,
                                 min(
-                                    reset_in
-                                    or self.PER_DAY_COOLDOWN_SECONDS,
+                                    max(
+                                        reset_in or 0,
+                                        _seconds_until_quota_reset()
+                                    ),
                                     self.MAX_DAILY_COOLDOWN_SECONDS
                                 )
                             )
@@ -410,6 +547,7 @@ Use the uploaded file as additional input for the project.
                             delay is not None
                             and delay <= self.MAX_RATE_LIMIT_WAIT_SECONDS
                             and attempt < self.MAX_RETRIES_PER_MODEL
+                            and not self._can_skip(model)
                         ):
 
                             print(
@@ -465,11 +603,11 @@ Use the uploaded file as additional input for the project.
 
                         overload_error = e
 
-                        # With a fallback available, don't sit through
-                        # long waits: give up on this model sooner.
+                        # If another model can answer, move on at once
+                        # instead of sitting through backoff waits.
                         max_attempts = (
-                            2
-                            if self.fallback.available
+                            1
+                            if self._can_skip(model)
                             else self.MAX_RETRIES_PER_MODEL
                         )
 
@@ -502,30 +640,6 @@ Use the uploaded file as additional input for the project.
 
         error = rate_limit_error or overload_error or last_error
 
-        # ----------------------------------------------------
-        # ALL GEMINI MODELS FAILED: try Groq, then NVIDIA
-        # ----------------------------------------------------
-
-        if self.fallback.available:
-
-            print(
-                "\nAll Gemini models failed. Trying fallback models..."
-            )
-
-            fallback_result = self.fallback.generate(
-                prompt,
-                attachment_path=attachment_path,
-                attachment_type=attachment_type,
-                max_output_tokens=max_output_tokens
-            )
-
-            if fallback_result.get("success"):
-                return fallback_result
-
-            print(
-                f"Fallback failed: {fallback_result.get('error')}"
-            )
-
         if error is None:
             error = (
                 "429 RESOURCE_EXHAUSTED: all Gemini models are cooling "
@@ -540,7 +654,7 @@ Use the uploaded file as additional input for the project.
         }
 
 
-    def generate_stream(
+    def _stream_gemini(
         self,
         prompt,
         attachment_path=None,
@@ -548,28 +662,15 @@ Use the uploaded file as additional input for the project.
         max_output_tokens=None
     ):
         """
-        Like generate(), but yields the answer piece by piece.
-
-        self.last_model holds the model name once the first piece
-        arrives. If a model fails before sending anything, the next
-        Gemini model (then Groq / NVIDIA) is tried. If it fails after
-        it has started, the error is raised.
+        Yields text from the Gemini models only. Raises _GeminiFailed
+        if no Gemini model could start an answer.
         """
-
-        self.last_model = None
 
         contents = self._build_contents(
             prompt=prompt,
             attachment_path=attachment_path,
             attachment_type=attachment_type
         )
-
-        config = None
-
-        if max_output_tokens:
-            config = types.GenerateContentConfig(
-                max_output_tokens=max_output_tokens
-            )
 
         rate_limit_error = None
         overload_error = None
@@ -586,123 +687,104 @@ Use the uploaded file as additional input for the project.
 
             print(f"\nStreaming from Gemini model: {model}")
 
-            started = False
+            # Second pass only if the model rejected thinking_config.
+            for _pass in (1, 2):
 
-            try:
+                started = False
 
-                for chunk in self.client.models.generate_content_stream(
-                    model=model,
-                    contents=contents,
-                    config=config,
-                ):
+                try:
 
-                    text = getattr(chunk, "text", None)
+                    for chunk in self.client.models.generate_content_stream(
+                        model=model,
+                        contents=contents,
+                        config=self._make_config(
+                            model,
+                            max_output_tokens
+                        ),
+                    ):
 
-                    if not text:
-                        continue
+                        text = getattr(chunk, "text", None)
 
-                    if not started:
-                        started = True
-                        self.last_model = model
-                        self._last_good_model[self._key_id] = model
+                        if not text:
+                            continue
 
-                    yield text
+                        if not started:
+                            started = True
+                            self.last_model = model
+                            self._last_good_model[self._key_id] = model
 
-                if started:
-                    return
+                        yield text
 
-                last_error = RuntimeError(
-                    f"{model} returned an empty answer."
-                )
+                    if started:
+                        return
 
-            except Exception as e:
-
-                if started:
-                    raise
-
-                error_text = str(e)
-                last_error = e
-
-                print(f"FAILED: {model}")
-                print(f"Reason: {error_text}")
-
-                if (
-                    "429" in error_text
-                    or "RESOURCE_EXHAUSTED" in error_text
-                ):
-
-                    rate_limit_error = e
-
-                    reset_in = self._parse_retry_delay(error_text)
-
-                    if "PerDay" in error_text:
-                        cooldown = min(
-                            reset_in or self.PER_DAY_COOLDOWN_SECONDS,
-                            self.MAX_DAILY_COOLDOWN_SECONDS
-                        )
-                    else:
-                        cooldown = (
-                            reset_in
-                            or self.PER_MINUTE_COOLDOWN_SECONDS
-                        )
-
-                    self._set_cooldown(model, cooldown)
-
-                elif (
-                    "404" in error_text
-                    or "NOT_FOUND" in error_text
-                ):
-
-                    self._unavailable_models.add(
-                        (self._key_id, model)
+                    last_error = RuntimeError(
+                        f"{model} returned an empty answer."
                     )
 
-                elif any(
-                    code in error_text
-                    for code in [
-                        "500", "502", "503", "504",
-                        "UNAVAILABLE", "INTERNAL"
-                    ]
-                ):
+                    break
 
-                    overload_error = e
+                except Exception as e:
 
-        # --------------------------------------------------
-        # ALL GEMINI MODELS FAILED: stream from Groq / NVIDIA
-        # --------------------------------------------------
+                    if started:
+                        raise
+
+                    error_text = str(e)
+                    last_error = e
+
+                    print(f"FAILED: {model}")
+                    print(f"Reason: {error_text}")
+
+                    if self._thinking_rejected(model, error_text):
+                        continue
+
+                    if (
+                        "429" in error_text
+                        or "RESOURCE_EXHAUSTED" in error_text
+                    ):
+
+                        rate_limit_error = e
+
+                        reset_in = self._parse_retry_delay(error_text)
+
+                        if "PerDay" in error_text:
+                            cooldown = min(
+                                max(
+                                    reset_in or 0,
+                                    _seconds_until_quota_reset()
+                                ),
+                                self.MAX_DAILY_COOLDOWN_SECONDS
+                            )
+                        else:
+                            cooldown = (
+                                reset_in
+                                or self.PER_MINUTE_COOLDOWN_SECONDS
+                            )
+
+                        self._set_cooldown(model, cooldown)
+
+                    elif (
+                        "404" in error_text
+                        or "NOT_FOUND" in error_text
+                    ):
+
+                        self._unavailable_models.add(
+                            (self._key_id, model)
+                        )
+
+                    elif any(
+                        code in error_text
+                        for code in [
+                            "500", "502", "503", "504",
+                            "UNAVAILABLE", "INTERNAL"
+                        ]
+                    ):
+
+                        overload_error = e
+
+                    break
 
         error = rate_limit_error or overload_error or last_error
-
-        if self.fallback.available:
-
-            print("\nAll Gemini models failed. Trying fallback models...")
-
-            started = False
-
-            try:
-
-                for text in self.fallback.generate_stream(
-                    prompt,
-                    attachment_path=attachment_path,
-                    attachment_type=attachment_type,
-                    max_output_tokens=max_output_tokens
-                ):
-
-                    if not started:
-                        started = True
-                        self.last_model = self.fallback.last_model
-
-                    yield text
-
-                if started:
-                    return
-
-            except Exception as e:
-
-                if started:
-                    raise
-
-                print(f"Fallback failed: {e}")
 
         if error is None:
             error = (
@@ -710,8 +792,171 @@ Use the uploaded file as additional input for the project.
                 "down after hitting their quota. Please try again later."
             )
 
+        raise _GeminiFailed(str(error))
+
+    # ------------------------------------------------------------
+    # PUBLIC API: routes each task to the right provider first
+    # ------------------------------------------------------------
+
+    def _fallback_first(self, task, attachment_type):
+        """
+        Light tasks go to Groq / NVIDIA first. Images are the exception:
+        only Gemini can read them, so those always start on Gemini.
+        """
+
+        return (
+            task in LIGHT_TASKS
+            and attachment_type != "photo"
+            and self.fallback.available
+        )
+
+    def generate(
+        self,
+        prompt,
+        attachment_path=None,
+        attachment_type=None,
+        max_output_tokens=None,
+        task=TASK_HEAVY
+    ):
+        """
+        task=TASK_HEAVY (default): Gemini -> Groq -> NVIDIA
+        task=TASK_LIGHT / TASK_CLASSIFY: Groq -> NVIDIA -> Gemini
+
+        Returns {"success", "model", "response", "error"}.
+        """
+
+        small_first = task == TASK_CLASSIFY
+
+        def run_gemini():
+            return self._generate_gemini(
+                prompt,
+                attachment_path=attachment_path,
+                attachment_type=attachment_type,
+                max_output_tokens=max_output_tokens
+            )
+
+        def run_fallback():
+            return self.fallback.generate(
+                prompt,
+                attachment_path=attachment_path,
+                attachment_type=attachment_type,
+                max_output_tokens=max_output_tokens,
+                small_first=small_first
+            )
+
+        if self._fallback_first(task, attachment_type):
+            steps = [("fallback", run_fallback), ("gemini", run_gemini)]
+        else:
+            steps = [("gemini", run_gemini)]
+
+            if self.fallback.available:
+                steps.append(("fallback", run_fallback))
+
+        errors = []
+
+        for name, step in steps:
+
+            print(f"\n[{task}] trying {name} models...")
+
+            result = step()
+
+            if result.get("success"):
+                self.last_model = result.get("model")
+                return result
+
+            print(f"[{task}] {name} failed: {result.get('error')}")
+
+            errors.append(result.get("error"))
+
+        return {
+            "success": False,
+            "model": None,
+            "response": None,
+            "error": " | ".join(e for e in errors if e),
+        }
+
+    def generate_stream(
+        self,
+        prompt,
+        attachment_path=None,
+        attachment_type=None,
+        max_output_tokens=None,
+        task=TASK_HEAVY
+    ):
+        """
+        Like generate(), but yields the answer piece by piece.
+
+        self.last_model holds the model name once the first piece
+        arrives. If a provider fails before sending anything, the next
+        one is tried. If it fails after it has started, the error is
+        raised.
+        """
+
+        self.last_model = None
+
+        small_first = task == TASK_CLASSIFY
+
+        def run_gemini():
+            return self._stream_gemini(
+                prompt,
+                attachment_path=attachment_path,
+                attachment_type=attachment_type,
+                max_output_tokens=max_output_tokens
+            )
+
+        def run_fallback():
+            return self.fallback.generate_stream(
+                prompt,
+                attachment_path=attachment_path,
+                attachment_type=attachment_type,
+                max_output_tokens=max_output_tokens,
+                small_first=small_first
+            )
+
+        if self._fallback_first(task, attachment_type):
+            steps = [("fallback", run_fallback), ("gemini", run_gemini)]
+        else:
+            steps = [("gemini", run_gemini)]
+
+            if self.fallback.available:
+                steps.append(("fallback", run_fallback))
+
+        errors = []
+
+        for name, step in steps:
+
+            print(f"\n[{task}] streaming from {name} models...")
+
+            started = False
+
+            try:
+
+                for text in step():
+
+                    if not started:
+                        started = True
+
+                        if name == "fallback":
+                            self.last_model = self.fallback.last_model
+
+                    yield text
+
+                if started:
+                    return
+
+                errors.append(f"{name}: empty answer")
+
+            except Exception as e:
+
+                if started:
+                    raise
+
+                print(f"[{task}] {name} failed: {e}")
+
+                errors.append(str(e))
+
         raise RuntimeError(
-            f"Gemini generation failed: {error}"
+            "Generation failed: " + " | ".join(errors)
         )
 
 

@@ -1,4 +1,4 @@
-from agents.gemini_model_manager import GeminiModelManager
+from agents.gemini_model_manager import GeminiModelManager, TASK_LIGHT
 from rag.context_builder import PHPContextBuilder
 
 
@@ -11,6 +11,10 @@ class PHPExplainAgent:
     """
 
     MAX_OUTPUT_TOKENS = 3000
+
+    # Earlier chat messages sent with a follow-up question.
+    MAX_HISTORY_MESSAGES = 6
+    MAX_HISTORY_CHARS_PER_MESSAGE = 2000
 
     def __init__(self, top_k=3, api_key=None):
         self.model_manager = GeminiModelManager(api_key=api_key)
@@ -26,14 +30,50 @@ class PHPExplainAgent:
         except Exception as e:
             return f"[PHP RAG unavailable: {e}]"
 
-    def build_prompt(self, question):
+    def format_history(self, history):
+        """Recent chat messages as plain text for the prompt."""
+
+        if not history:
+            return ""
+
+        lines = []
+
+        for message in history[-self.MAX_HISTORY_MESSAGES:]:
+
+            role = "User" if message.get("role") == "user" else "Assistant"
+
+            content = (message.get("content") or "").strip()
+
+            if len(content) > self.MAX_HISTORY_CHARS_PER_MESSAGE:
+                content = (
+                    content[:self.MAX_HISTORY_CHARS_PER_MESSAGE] + " ..."
+                )
+
+            lines.append(f"{role}: {content}")
+
+        return "\n\n".join(lines)
+
+    def build_prompt(self, question, history=None):
+        """
+        history: earlier messages [{"role", "content"}, ...] when this
+        is a follow-up question in the same chat.
+        """
 
         rag_context = self.get_rag_context(question)
+
+        conversation = self.format_history(history)
+
+        if conversation:
+            conversation = f"""
+EARLIER CONVERSATION (the new question may refer to it, e.g. "this",
+"that example", "explain it more simply"):
+{conversation}
+"""
 
         return f"""
 You are a PHP teacher. The user asked a question and wants an
 EXPLANATION, not a project.
-
+{conversation}
 USER QUESTION:
 {question}
 
@@ -72,7 +112,8 @@ they can ask for it, for example "create a PHP project that ...".
 
         yield from self.model_manager.generate_stream(
             prompt,
-            max_output_tokens=self.MAX_OUTPUT_TOKENS
+            max_output_tokens=self.MAX_OUTPUT_TOKENS,
+            task=TASK_LIGHT
         )
 
     def explain(self, question):
@@ -81,7 +122,8 @@ they can ask for it, for example "create a PHP project that ...".
 
         result = self.model_manager.generate(
             prompt,
-            max_output_tokens=self.MAX_OUTPUT_TOKENS
+            max_output_tokens=self.MAX_OUTPUT_TOKENS,
+            task=TASK_LIGHT
         )
 
         if not result.get("success"):

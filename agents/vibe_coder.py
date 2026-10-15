@@ -19,7 +19,8 @@ class PHPVibeCoder:
         requirement,
         project_name="vibe-project",
         attachment_path=None,
-        attachment_type=None
+        attachment_type=None,
+        on_progress=None
     ):
         print("\n" + "=" * 70)
         print("STEP 1 - CODE GENERATION")
@@ -35,7 +36,8 @@ class PHPVibeCoder:
             requirement,
             project_name=project_name,
             attachment_path=attachment_path,
-            attachment_type=attachment_type
+            attachment_type=attachment_type,
+            on_progress=on_progress
         )
 
         self.last_generation = result
@@ -126,8 +128,13 @@ class PHPVibeCoder:
         requirement,
         project_name="vibe-project",
         attachment_path=None,
-        attachment_type=None
+        attachment_type=None,
+        on_progress=None
     ):
+        """
+        on_progress: optional callback(text_so_far) called while the
+        project is being written (streaming).
+        """
         print("\n" + "=" * 70)
         print("PHP VIBECODER")
         print("=" * 70)
@@ -148,7 +155,8 @@ class PHPVibeCoder:
             requirement=requirement,
             project_name=project_name,
             attachment_path=attachment_path,
-            attachment_type=attachment_type
+            attachment_type=attachment_type,
+            on_progress=on_progress
         )
 
         # --------------------------------------------------

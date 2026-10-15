@@ -73,8 +73,14 @@ class PHPCodeAgent:
         requirement,
         project_name="php-project",
         attachment_path=None,
-        attachment_type=None
+        attachment_type=None,
+        on_progress=None
     ):
+        """
+        on_progress: optional callback(text_so_far). When given, the
+        answer is streamed and the callback is called as it grows, so
+        the UI can show the project while it is being written.
+        """
 
         # ---------------------------------------------------------
         # Get relevant PHP documentation from RAG
@@ -219,6 +225,35 @@ Short numbered steps to install, configure the database and run.
 
             response = cached["response"]
             selected_model = f"{cached.get('model')} (cached)"
+
+        elif on_progress:
+
+            pieces = []
+
+            try:
+
+                for text in self.model_manager.generate_stream(
+                    prompt,
+                    attachment_path=attachment_path,
+                    attachment_type=attachment_type,
+                    max_output_tokens=self.MAX_OUTPUT_TOKENS
+                ):
+
+                    pieces.append(text)
+
+                    try:
+                        on_progress("".join(pieces))
+                    except Exception as e:
+                        # A UI problem must not stop the generation.
+                        print(f"Progress callback failed: {e}")
+
+            except Exception as e:
+                raise RuntimeError(
+                    f"Gemini generation failed: {e}"
+                )
+
+            response = "".join(pieces)
+            selected_model = self.model_manager.last_model
 
         else:
 

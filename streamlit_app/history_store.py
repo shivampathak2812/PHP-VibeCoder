@@ -236,6 +236,41 @@ def load_explanation(explanation_id):
         return None
 
 
+def append_explanation_message(explanation_id, role, content, model=None):
+    """
+    Add a follow-up message to an explanation's chat.
+    Follow-ups are kept in record["messages"]; the first question and
+    answer stay in "question" / "answer".
+    """
+
+    record = load_explanation(explanation_id)
+
+    if not record:
+        return None
+
+    message = {
+        "role": role,
+        "content": content,
+        "time": _now(),
+    }
+
+    if model:
+        message["model"] = model
+
+    record.setdefault("messages", []).append(message)
+
+    record["updated_at"] = _now()
+
+    with open(
+        _explanation_path(explanation_id),
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(record, f, indent=2, ensure_ascii=False)
+
+    return record
+
+
 def list_explanations():
     """All saved explanations, newest first."""
 
