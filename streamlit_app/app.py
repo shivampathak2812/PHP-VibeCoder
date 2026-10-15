@@ -3,6 +3,9 @@ import re
 import sys
 import time
 import shutil
+import io
+import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -67,7 +70,7 @@ os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
 
 st.set_page_config(
     page_title="PHP Vibe Coder",
-    page_icon="💻",
+    page_icon="🐘",
     layout="wide"
 )
 
@@ -225,7 +228,8 @@ def build_generation_summary(result, files):
 
     if result.get("success"):
         lines.append(
-            f"Generated project **{result.get('project')}** "
+            f"### Project ready ✓\n"
+            f"Generated **{result.get('project')}** "
             f"with {len(files)} file(s)."
         )
     else:
@@ -252,7 +256,7 @@ def build_generation_summary(result, files):
 
     if files:
         lines.append(
-            "**Files:**\n" + "\n".join(f"- `{f}`" for f in files)
+            " ".join(f"`✓ {f}`" for f in files)
         )
 
     lines.append(
@@ -316,13 +320,19 @@ LIVE_PREVIEW_INTERVAL_SECONDS = 0.5
 # Only the end of the answer is shown, so redrawing stays fast.
 LIVE_PREVIEW_TAIL_CHARS = 2500
 
-FILE_LINE_PATTERN = re.compile(r"^FILE:\s*(\S+)", re.MULTILINE)
+
+
+FILE_BLOCK_PATTERN = re.compile(
+    r"^FILE:\s*(\S+)\s*\n(?:```[\w+-]*\n)?(.*?)(?=^FILE:|\Z)",
+    re.MULTILINE | re.DOTALL
+)
 
 
 def make_live_preview(live, status, progress):
     """
     Returns a callback for PHPVibeCoder.run(on_progress=...).
-    Shows which files are done and the code being written right now.
+    Shows the finished files with a tick and the file being written
+    right now with its code.
     """
 
     last_draw = [0.0]
@@ -336,29 +346,31 @@ def make_live_preview(live, status, progress):
 
         last_draw[0] = now
 
-        files = FILE_LINE_PATTERN.findall(text)
+        blocks = FILE_BLOCK_PATTERN.findall(text)
 
-        if files:
-            status.info(
-                f"Writing **{files[-1]}** "
-                f"({len(files)} file(s) so far)..."
-            )
-        else:
+        if not blocks:
             status.info("Planning the project...")
+            progress.progress(15)
+            return
+
+        files = [name for name, _ in blocks]
+        current, code = blocks[-1]
+
+        status.info(f"Writing **{current}** ({len(files)} file(s) so far)...")
 
         # Real total is unknown: creep from 20% towards 85%.
         progress.progress(min(20 + len(files) * 5, 85))
 
-        tail = text[-LIVE_PREVIEW_TAIL_CHARS:]
+        code = code.split("```")[0][-LIVE_PREVIEW_TAIL_CHARS:]
 
         with live.container():
 
-            if files:
-                st.caption(
-                    "Files: " + ", ".join(f"`{f}`" for f in files)
-                )
+            st.markdown(
+                " ".join(f"`✓ {name}`" for name in files[:-1])
+                + f" `⏳ {current}`"
+            )
 
-            st.code(tail)
+            st.code(code, language=get_language(current))
 
     return on_progress
 
@@ -403,8 +415,6 @@ def show_explanation(question):
 
         return
 
-    st.subheader("Explanation")
-
     # The answer appears word by word.
     try:
 
@@ -420,10 +430,8 @@ def show_explanation(question):
 
     model = agent.model_manager.last_model
 
-    st.caption(
-        "Explanation only: no project was generated."
-        + (f" Model: {model}" if model else "")
-    )
+    if model:
+        st.caption(f"Model: {model}")
 
     # Saved to the sidebar so it can be reopened (and continued) later.
     try:
@@ -762,178 +770,86 @@ def display_test_result(result):
 
 
 # ============================================================
-# ATTACHMENT MENU FOR GENERATE PROJECT REQUIREMENT BOX
-# (the only "+" left in the app — bottom-left of the
-#  Project Requirement box: Upload File, Upload Image)
+# LOOK & FEEL (colours come from .streamlit/config.toml)
 # ============================================================
 
-def render_requirement_attachment_menu():
+ACCENT = "#777BB4"
 
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stTextArea"] textarea {
-            padding-bottom: 46px !important;
-        }
-
-        .st-key-requirement_attach_wrapper {
-            margin-top: -46px;
-            margin-bottom: 8px;
-            margin-left: 10px;
-            width: fit-content;
-            position: relative;
-            z-index: 5;
-        }
-
-        .st-key-requirement_attach_wrapper button {
-            padding: 0.15rem 0.6rem !important;
-            min-height: 1.8rem !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
-
-    with st.container(key="requirement_attach_wrapper"):
-
-        with st.popover(
-            "+",
-            use_container_width=False
-        ):
-
-            st.markdown(
-                "**Add to Requirement**"
-            )
-
-            attach_action = st.radio(
-                "Choose action",
-                [
-                    "Upload File",
-                    "Upload Image",
-                ],
-                key="requirement_attach_radio",
-                label_visibility="collapsed"
-            )
-
-            # ------------------------------------------------
-            # FILE
-            # ------------------------------------------------
-
-            if attach_action == "Upload File":
-
-                req_file = st.file_uploader(
-                    "Choose file",
-                    key="requirement_file_uploader"
-                )
-
-                if req_file:
-
-                    st.caption(
-                        f"{req_file.name} • "
-                        f"{format_file_size(req_file.size)}"
-                    )
-
-                    if st.button(
-                        "Save File",
-                        type="primary",
-                        use_container_width=True,
-                        key="save_requirement_file"
-                    ):
-
-                        try:
-
-                            saved_path = save_uploaded_file(
-                                req_file
-                            )
-
-                            st.session_state.uploaded_file_info = {
-                                "name": req_file.name,
-                                "path": saved_path,
-                                "type": "file",
-                                "size": req_file.size,
-                            }
-
-                            st.success(
-                                "File uploaded successfully."
-                            )
-
-                        except Exception as e:
-
-                            st.error(
-                                "Unable to save file."
-                            )
-
-                            st.exception(e)
-
-            # ------------------------------------------------
-            # IMAGE
-            # ------------------------------------------------
-
-            else:
-
-                req_image = st.file_uploader(
-                    "Choose image",
-                    type=[
-                        "png",
-                        "jpg",
-                        "jpeg",
-                        "webp",
-                        "gif"
-                    ],
-                    key="requirement_image_uploader"
-                )
-
-                if req_image:
-
-                    st.image(
-                        req_image,
-                        caption=req_image.name,
-                        use_container_width=True
-                    )
-
-                    if st.button(
-                        "Save Image",
-                        type="primary",
-                        use_container_width=True,
-                        key="save_requirement_image"
-                    ):
-
-                        try:
-
-                            saved_path = save_uploaded_file(
-                                req_image
-                            )
-
-                            st.session_state.uploaded_file_info = {
-                                "name": req_image.name,
-                                "path": saved_path,
-                                "type": "photo",
-                                "size": req_image.size,
-                            }
-
-                            st.success(
-                                "Image uploaded successfully."
-                            )
-
-                        except Exception as e:
-
-                            st.error(
-                                "Unable to save image."
-                            )
-
-                            st.exception(e)
+AVATARS = {"user": "🧑‍💻", "assistant": "🐘"}
 
 
-# ============================================================
-# HEADER
-# ============================================================
+def chat_bubble(role):
+    """st.chat_message with the app's own avatars."""
+    return st.chat_message(role, avatar=AVATARS.get(role))
 
-st.title(
-    "PHP Vibe Coder"
-)
+st.markdown(
+    """
+    <style>
+    /* Readable column, like a chat app. */
+    .block-container {max-width: 920px; padding-top: 2.2rem;
+                      padding-bottom: 7rem;}
 
-st.caption(
-    "Requirement → Architecture → Code → Test → Debug → Retest → Deliver"
+    /* Headings inside answers stay modest. */
+    [data-testid="stChatMessage"] h1 {font-size: 1.35rem;}
+    [data-testid="stChatMessage"] h2 {font-size: 1.2rem;}
+    [data-testid="stChatMessage"] h3 {font-size: 1.05rem;}
+    [data-testid="stChatMessage"] h4 {font-size: 1rem;}
+
+    /* Sidebar brand */
+    .vc-brand {display:flex; align-items:center; gap:10px;
+               font-weight:700; font-size:1.15rem; margin:0 0 .4rem;}
+    .vc-logo {width:32px; height:32px; border-radius:9px;
+              background:#777BB4; color:#fff; display:grid;
+              place-items:center; font-size:.72rem; font-weight:800;
+              letter-spacing:.3px;}
+    .vc-group {font-size:.7rem; text-transform:uppercase;
+               letter-spacing:.08em; opacity:.6; margin:.7rem 0 .1rem .3rem;}
+    .vc-badge {display:inline-block; border:1px solid #2a2f42;
+               background:#22283a; border-radius:999px;
+               padding:.15rem .6rem; font-size:.75rem;}
+    .vc-badge b {color:#4cc38a;}
+
+    /* History list: compact, left aligned rows. */
+    .st-key-history_list button {justify-content:flex-start;
+               padding:.3rem .55rem; min-height:2rem; width:100%;}
+    .st-key-history_list button > div,
+    .st-key-history_list button > div > span {width:100%;
+               justify-content:flex-start;}
+    .st-key-history_list button p {text-align:left; white-space:nowrap;
+               overflow:hidden; text-overflow:ellipsis; font-size:.88rem;}
+    .st-key-history_list [data-testid="stVerticalBlock"] {gap:.1rem;}
+
+    /* Home */
+    .vc-hero {text-align:center; margin:9vh 0 1.6rem;}
+    .vc-hero .vc-logo {width:56px; height:56px; border-radius:15px;
+                       font-size:1rem; margin:0 auto 1rem;}
+    .vc-hero h1 {font-size:2.1rem; margin:0; padding:0;}
+    .vc-hero p {opacity:.7; margin-top:.4rem;}
+    .st-key-example_chips button {height:100%; min-height:5.2rem;
+               justify-content:flex-start; align-items:flex-start;
+               text-align:left; border-radius:12px; padding:.75rem .9rem;}
+    .st-key-example_chips button > div,
+    .st-key-example_chips button > div > span {width:100%;
+               justify-content:flex-start;}
+    .st-key-example_chips [data-testid="stMarkdownContainer"] {
+               width:100%;}
+    .st-key-example_chips button p {text-align:left; font-size:.9rem;
+               line-height:1.45; white-space:normal; overflow:visible;
+               display:block;}
+    .st-key-example_chips button p strong {font-size:.68rem;
+               letter-spacing:.08em; color:#8f93cf;}
+    .st-key-example_chips [data-testid="stMarkdownContainer"].stMarkdownEllipsis {
+               overflow:visible; white-space:normal;}
+
+    /* Chat bubbles: the user's message sits on the right. */
+    [data-testid="stChatMessage"]:has([aria-label="Chat message from user"]) {
+               background:#262b3d;}
+
+    /* Project actions row */
+    .st-key-project_actions button {border-radius:999px;}
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
 
@@ -941,143 +857,169 @@ st.caption(
 # SIDEBAR
 # ============================================================
 
-st.sidebar.title(
-    "PHP Vibe Coder"
+st.sidebar.markdown(
+    '<div class="vc-brand"><div class="vc-logo">PHP</div>'
+    'Vibe Coder</div>',
+    unsafe_allow_html=True
 )
 
 st.sidebar.button(
-    "➕ New Project",
+    "＋ New chat",
     use_container_width=True,
+    type="primary",
     on_click=start_new_project,
     key="new_project_button"
 )
 
-mode = st.sidebar.radio(
-    "Operation",
-    [
-        "Generate Project",
-        "Project Workspace",
-        "Understand Code",
-        "Refactor Code",
-        "Test Project"
-    ],
-    key="mode",
-    on_change=on_mode_change
-)
-
-st.sidebar.markdown(
-    "---"
+st.sidebar.text_input(
+    "Search chats",
+    placeholder="🔍 Search chats",
+    label_visibility="collapsed",
+    key="history_search"
 )
 
 # Filled at the end of the script so a project generated
 # in this run shows up immediately.
 history_container = st.sidebar.container()
 
-st.sidebar.markdown(
-    "---"
-)
+st.sidebar.markdown("---")
+
+# The older single-purpose pages, kept for power users.
+TOOL_LABELS = {
+    "Generate Project": "💬 Chat",
+    "Project Workspace": "📁 Project workspace",
+    "Understand Code": "🔍 Understand code",
+    "Refactor Code": "✏️ Refactor code",
+    "Test Project": "🧪 Test project",
+}
+
+with st.sidebar.expander(
+    "🛠 Tools",
+    expanded=st.session_state.get("mode", "Generate Project")
+    != "Generate Project"
+):
+
+    mode = st.radio(
+        "Tools",
+        list(TOOL_LABELS),
+        format_func=TOOL_LABELS.get,
+        key="mode",
+        on_change=on_mode_change,
+        label_visibility="collapsed"
+    )
 
 # Filled at the end of the script so the count is up to date.
 usage_placeholder = st.sidebar.empty()
-
-st.sidebar.caption(
-    "PHP 8.x • Gemini • RAG • FAISS"
-)
 
 
 def render_usage_sidebar():
 
     left = generations_left()
 
-    usage_placeholder.caption(
-        f"Generations left: {left}/{GENERATIONS_PER_WINDOW} "
-        f"(each one frees up {WINDOW_SECONDS // 60} min after use)"
+    usage_placeholder.markdown(
+        f'<span class="vc-badge" title="Each generation frees up '
+        f'{WINDOW_SECONDS // 60} min after use"><b>●</b> '
+        f'{left}/{GENERATIONS_PER_WINDOW} generations</span>',
+        unsafe_allow_html=True
     )
 
 
+def _history_group(timestamp):
+    """Today / Yesterday / Previous 7 days / Older."""
+
+    try:
+        day = datetime.fromisoformat(timestamp).date()
+    except Exception:
+        return "Older"
+
+    today = datetime.now().date()
+
+    if day == today:
+        return "Today"
+    if day == today - timedelta(days=1):
+        return "Yesterday"
+    if day > today - timedelta(days=7):
+        return "Previous 7 days"
+    return "Older"
+
+
+def _short(text, limit=34):
+    text = " ".join((text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
 def render_history_sidebar():
+    """One list for projects and explanations, newest first."""
+
+    entries = []
+
+    for item in list_projects_with_history(GENERATED_PROJECTS_DIR):
+        entries.append({
+            "kind": "project",
+            "id": item["project"],
+            "label": item["project"],
+            "search": f"{item['project']} {item.get('requirement') or ''}",
+            "help": (item.get("requirement") or "")[:200] or None,
+            "time": item.get("sort_key") or "",
+        })
+
+    for record in list_explanations():
+        question = record.get("question") or ""
+        entries.append({
+            "kind": "explanation",
+            "id": record["id"],
+            "label": question,
+            "search": question,
+            "help": question[:200] or None,
+            "time": record.get("updated_at") or record.get("created_at") or "",
+        })
+
+    query = (st.session_state.get("history_search") or "").strip().lower()
+
+    if query:
+        entries = [e for e in entries if query in e["search"].lower()]
+
+    entries.sort(key=lambda e: e["time"], reverse=True)
 
     with history_container:
 
-        st.markdown(
-            "**History**"
-        )
-
-        items = list_projects_with_history(
-            GENERATED_PROJECTS_DIR
-        )
-
-        explanations = list_explanations()
-
-        if not items and not explanations:
-
-            st.caption(
-                "Nothing yet."
-            )
-
+        if not entries:
+            st.caption("No matching chats." if query else "No chats yet.")
             return
 
-        if items:
+        with st.container(key="history_list"):
 
-            st.caption(
-                "Projects"
-            )
+            current_group = None
 
-        for item in items:
+            for entry in entries:
 
-            project = item["project"]
+                group = _history_group(entry["time"])
 
-            requirement = (
-                item.get("requirement") or ""
-            ).strip().replace("\n", " ")
+                if group != current_group:
+                    st.markdown(
+                        f'<div class="vc-group">{group}</div>',
+                        unsafe_allow_html=True
+                    )
+                    current_group = group
 
-            label = f"💬 {project}"
+                if entry["kind"] == "project":
+                    active = st.session_state.active_chat == entry["id"]
+                    icon, callback = "📦", open_chat
+                    key = f"history_{entry['id']}"
+                else:
+                    active = st.session_state.active_explanation == entry["id"]
+                    icon, callback = "💡", open_explanation
+                    key = f"explain_{entry['id']}"
 
-            st.button(
-                label,
-                key=f"history_{project}",
-                help=requirement[:200] or None,
-                use_container_width=True,
-                type=(
-                    "primary"
-                    if st.session_state.active_chat == project
-                    else "secondary"
-                ),
-                on_click=open_chat,
-                args=(project,)
-            )
-
-        if explanations:
-
-            st.caption(
-                "Explanations"
-            )
-
-        for record in explanations:
-
-            question = (
-                record.get("question") or ""
-            ).strip().replace("\n", " ")
-
-            short = (
-                question[:28] + "..."
-                if len(question) > 28
-                else question
-            )
-
-            st.button(
-                f"💡 {short}",
-                key=f"explain_{record['id']}",
-                help=question[:200] or None,
-                use_container_width=True,
-                type=(
-                    "primary"
-                    if st.session_state.active_explanation == record["id"]
-                    else "secondary"
-                ),
-                on_click=open_explanation,
-                args=(record["id"],)
-            )
+                st.button(
+                    f"{icon} {_short(entry['label'])}",
+                    key=key,
+                    help=entry["help"],
+                    use_container_width=True,
+                    type="secondary" if active else "tertiary",
+                    on_click=callback,
+                    args=(entry["id"],)
+                )
 
 
 def render_explanation(explanation_id):
@@ -1094,17 +1036,15 @@ def render_explanation(explanation_id):
 
         return
 
-    st.header(
-        "💡 Explanation"
-    )
+    st.markdown("#### 💡 Explanation")
 
-    with st.chat_message("user"):
+    with chat_bubble("user"):
 
         st.markdown(
             record.get("question", "")
         )
 
-    with st.chat_message("assistant"):
+    with chat_bubble("assistant"):
 
         st.markdown(
             record.get("answer", "")
@@ -1115,7 +1055,7 @@ def render_explanation(explanation_id):
 
     for message in record.get("messages", []):
 
-        with st.chat_message(message["role"]):
+        with chat_bubble(message["role"]):
 
             st.markdown(message["content"])
 
@@ -1129,7 +1069,7 @@ def render_explanation(explanation_id):
     if not question:
         return
 
-    with st.chat_message("user"):
+    with chat_bubble("user"):
 
         st.markdown(question)
 
@@ -1140,7 +1080,7 @@ def render_explanation(explanation_id):
         {"role": "assistant", "content": record.get("answer", "")},
     ] + list(record.get("messages", []))
 
-    with st.chat_message("assistant"):
+    with chat_bubble("assistant"):
 
         try:
 
@@ -1170,90 +1110,223 @@ def render_explanation(explanation_id):
     )
 
 
-def render_chat(project):
+def project_zip_bytes(project):
+    """The whole project as a .zip, built in memory."""
 
-    project_dir = os.path.join(
-        GENERATED_PROJECTS_DIR,
-        project
-    )
+    project_dir = os.path.join(GENERATED_PROJECTS_DIR, project)
 
-    if not os.path.isdir(project_dir):
+    buffer = io.BytesIO()
 
-        st.warning(
-            f"Project `{project}` no longer exists."
-        )
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for relative in get_project_files(project):
+            archive.write(
+                os.path.join(project_dir, relative),
+                arcname=os.path.join(project, relative)
+            )
 
+    return buffer.getvalue()
+
+
+# Questions sent by the action buttons under a project.
+PROJECT_ACTIONS = {
+    "run": (
+        "▶ How to run",
+        "How do I run this project step by step? Include the database "
+        "setup, configuration and the URL to open."
+    ),
+    "structure": (
+        "🔍 Explain structure",
+        "Explain the structure of this project: what each folder and "
+        "file does and how a request flows through it."
+    ),
+    "feature": (
+        "✏️ Add a feature",
+        "Suggest 3 useful features I could add to this project, and for "
+        "each one list which files I would change and how."
+    ),
+}
+
+
+def queue_project_question(text):
+    st.session_state.pending_question = text
+
+
+def queue_project_tests():
+    st.session_state.pending_tests = True
+
+
+def render_project_files(project, files):
+    """File list on the left, the selected file's code on the right."""
+
+    if not files:
+        st.caption("No files found in this project.")
         return
 
-    record = get_or_create_history(
-        project,
-        project_dir
-    )
+    left, right = st.columns([1, 2.6])
 
-    st.header(
-        f"💬 {project}"
-    )
+    with left:
+        selected = st.radio(
+            "Files",
+            files,
+            key=f"file_pick_{project}",
+            label_visibility="collapsed"
+        )
 
-    files = get_project_files(
-        project
-    )
+    with right:
+        st.caption(f"`{selected}`")
+        st.code(
+            read_project_file(project, selected),
+            language=get_language(selected)
+        )
 
-    with st.expander(
-        f"📁 Project files ({len(files)})"
-    ):
 
-        for file in files:
+def render_project_actions(project):
 
-            with st.expander(
-                f"📄 {file}"
-            ):
+    with st.container(key="project_actions"):
 
-                st.code(
-                    read_project_file(project, file),
-                    language=get_language(file)
-                )
+        columns = st.columns([1.25, 1, 1.3, 1.15, 1])
 
-    if not record.get("messages"):
+        try:
+            zip_bytes = project_zip_bytes(project)
+        except Exception:
+            zip_bytes = None
 
+        if zip_bytes:
+            columns[0].download_button(
+                "📥 Download ZIP",
+                data=zip_bytes,
+                file_name=f"{project}.zip",
+                mime="application/zip",
+                type="primary",
+                use_container_width=True,
+                key=f"zip_{project}"
+            )
+
+        for column, (key, (label, question)) in zip(
+            columns[1:4], PROJECT_ACTIONS.items()
+        ):
+            column.button(
+                label,
+                key=f"action_{key}_{project}",
+                use_container_width=True,
+                on_click=queue_project_question,
+                args=(question,)
+            )
+
+        columns[4].button(
+            "🧪 Run tests",
+            key=f"action_tests_{project}",
+            use_container_width=True,
+            on_click=queue_project_tests
+        )
+
+
+def test_report_markdown(report):
+    """PHP syntax test results as a chat message."""
+
+    if not report.get("php_available", True):
+        return (
+            "PHP is not installed on this server, so the syntax test "
+            "could not run. Run `php -l <file>` on your computer instead."
+        )
+
+    lines = [
+        f"### Test results\n"
+        f"**{report.get('passed', 0)}** passed, "
+        f"**{report.get('failed', 0)}** failed "
+        f"(of {report.get('total_files', 0)} PHP files)."
+    ]
+
+    for item in report.get("results", []):
+        name = os.path.basename(str(item.get("file", "")))
+        if item.get("status") == "FAIL":
+            lines.append(f"- ❌ `{name}`: {item.get('error')}")
+        else:
+            lines.append(f"- ✅ `{name}`")
+
+    return "\n".join(lines)
+
+
+def render_chat(project):
+
+    project_dir = os.path.join(GENERATED_PROJECTS_DIR, project)
+
+    if not os.path.isdir(project_dir):
+        st.warning(f"Project `{project}` no longer exists.")
+        return
+
+    record = get_or_create_history(project, project_dir)
+
+    files = get_project_files(project)
+
+    st.markdown(f"#### 📦 {project}")
+
+    messages = record.get("messages", [])
+
+    def project_panel():
+        with st.expander(f"📁 Files ({len(files)})"):
+            render_project_files(project, files)
+        render_project_actions(project)
+
+    if not messages:
         st.info(
             "This project was generated before chat history existed. "
             "Ask anything about it below."
         )
+        project_panel()
 
-    for message in record.get("messages", []):
+    for index, message in enumerate(messages):
 
-        with st.chat_message(
-            message["role"]
-        ):
+        with chat_bubble(message["role"]):
 
-            st.markdown(
-                message["content"]
-            )
+            st.markdown(message["content"])
 
-    question = st.chat_input(
-        f"Ask anything about {project}..."
-    )
+            # The first answer (the generation summary) carries the
+            # files and the action buttons, like the mockup.
+            if index == 1 and message["role"] == "assistant":
+                project_panel()
+
+    if len(messages) == 1:
+        project_panel()
+
+    typed = st.chat_input(f"Ask anything about {project}…")
+
+    # ---------------- Run tests button ----------------
+    if not typed and st.session_state.pop("pending_tests", False):
+
+        with chat_bubble("user"):
+            st.markdown("🧪 Run tests")
+
+        with chat_bubble("assistant"):
+            try:
+                with st.spinner("Checking PHP syntax..."):
+                    report = PHPTester().test_project(project_dir)
+                answer = test_report_markdown(report)
+            except Exception as e:
+                answer = f"Could not run the tests: `{e}`"
+            st.markdown(answer)
+
+        append_message(record, "user", "🧪 Run tests")
+        append_message(record, "assistant", answer)
+        return
+
+    question = typed or st.session_state.pop("pending_question", None)
 
     if not question:
         return
 
-    with st.chat_message("user"):
-
+    with chat_bubble("user"):
         st.markdown(question)
 
-    earlier_messages = list(
-        record.get("messages", [])
-    )
+    earlier_messages = list(messages)
 
-    with st.chat_message("assistant"):
+    with chat_bubble("assistant"):
 
         try:
 
             agent = PHPCodeUnderstandingAgent()
 
-            with st.spinner(
-                "Analyzing project..."
-            ):
+            with st.spinner("Reading the project..."):
 
                 prompt = agent.build_prompt(
                     project_path=project_dir,
@@ -1262,22 +1335,263 @@ def render_chat(project):
                     requirement=record.get("requirement")
                 )
 
-            # The answer appears word by word.
-            answer = st.write_stream(
-                agent.ask_stream(prompt)
+            answer = st.write_stream(agent.ask_stream(prompt))
+
+        except Exception as e:
+
+            show_error("Error while answering.", e)
+
+            return
+
+        model = agent.model_manager.last_model
+
+        if model:
+            st.caption(f"Model: {model}")
+
+    append_message(record, "user", question)
+    append_message(record, "assistant", answer)
+
+
+# ============================================================
+# HOME: one chat box for questions and new projects
+# ============================================================
+
+# (label shown on the card, prompt that is sent)
+EXAMPLE_PROMPTS = [
+    ("BUILD", "Login & register system with MySQL and sessions",
+     "Create a PHP login and registration system with MySQL, "
+     "password hashing and sessions."),
+    ("BUILD", "REST API for products with CRUD using PDO",
+     "Create a REST API in PHP for products with CRUD operations "
+     "using PDO."),
+    ("BUILD", "Hotel table booking with date & time slots",
+     "Build a hotel table booking system in PHP with date and "
+     "time slots."),
+    ("EXPLAIN", "PDO kya hai aur mysqli se safe kyun hai?",
+     "PDO kya hai aur mysqli se safe kyun hai?"),
+    ("EXPLAIN", "Sessions vs cookies in PHP",
+     "Explain sessions vs cookies in PHP."),
+    ("EXPLAIN", "How does password_hash() work?",
+     "How does password_hash() and password_verify() work?"),
+]
+
+ATTACHMENT_TYPES = [
+    "png", "jpg", "jpeg", "webp", "gif",
+    "txt", "md", "php", "html", "css", "js", "json", "sql",
+    "csv", "xml", "pdf", "docx",
+]
+
+
+def queue_prompt(prompt):
+    st.session_state.pending_prompt = prompt
+
+
+def attachment_from_chat_input(value):
+    """Save the file sent with the chat box, in the old upload format."""
+
+    files = getattr(value, "files", None) or []
+
+    if not files:
+        return None
+
+    uploaded = files[0]
+
+    path = save_uploaded_file(uploaded)
+
+    return {
+        "name": uploaded.name,
+        "path": path,
+        "type": (
+            "photo"
+            if (uploaded.type or "").startswith("image/")
+            else "file"
+        ),
+        "size": uploaded.size,
+    }
+
+
+def show_limit_warning(reason, wait_seconds):
+
+    if reason == "global":
+        st.warning(
+            "The app has reached its generation limit for this hour "
+            "(shared by all users). Try again in about "
+            f"{format_wait(wait_seconds)}. Explanations still work."
+        )
+    else:
+        st.warning(
+            f"You've used all {GENERATIONS_PER_WINDOW} free generations "
+            f"for now. Try again in about {format_wait(wait_seconds)}. "
+            "Explanations still work."
+        )
+
+
+def handle_request(requirement, attachment=None):
+    """
+    Answer a question or build a project, shown as a chat.
+    Returns True when the finished chat should be opened (rerun).
+    """
+
+    with chat_bubble("user"):
+
+        st.markdown(requirement)
+
+        if attachment:
+            icon = "🖼️" if attachment["type"] == "photo" else "📎"
+            st.caption(
+                f"{icon} {attachment['name']} • "
+                f"{format_file_size(attachment['size'])}"
+            )
+
+    # ---------------- explanation ----------------
+    if detect_request_type(requirement, "Auto") == EXPLAIN:
+
+        with chat_bubble("assistant"):
+            explanation_id = show_explanation(requirement)
+
+        if explanation_id:
+            open_explanation(explanation_id)
+            return True
+
+        return False
+
+    # ---------------- new project ----------------
+    ok, reason, wait_seconds, slot_token = (
+        get_generation_limiter().try_acquire(current_user_id())
+    )
+
+    if not ok:
+        with chat_bubble("assistant"):
+            show_limit_warning(reason, wait_seconds)
+        return False
+
+    project_name = make_project_name(requirement)
+
+    with chat_bubble("assistant"):
+
+        status = st.empty()
+        progress = st.progress(0)
+        live = st.empty()
+
+        try:
+
+            status.info(
+                "Planning the project..."
+                + (" (using your attachment)" if attachment else "")
+            )
+
+            progress.progress(10)
+
+            result = PHPVibeCoder(max_retries=3).run(
+                requirement=requirement,
+                project_name=project_name,
+                attachment_path=(attachment or {}).get("path"),
+                attachment_type=(attachment or {}).get("type"),
+                on_progress=make_live_preview(live, status, progress)
             )
 
         except Exception as e:
 
-            show_error(
-                "Error while answering.",
-                e
-            )
+            # Failed runs do not use up a generation.
+            get_generation_limiter().release(current_user_id(), slot_token)
 
-            return
+            status.empty()
+            progress.empty()
+            live.empty()
 
-    append_message(record, "user", question)
-    append_message(record, "assistant", answer)
+            show_error("Error while running Vibe Coder.", e)
+
+            return False
+
+        status.empty()
+        progress.empty()
+        live.empty()
+
+    project = result.get("project", project_name)
+
+    st.session_state.generation_response = result
+    st.session_state.current_project = project
+
+    create_history(
+        project=project,
+        requirement=requirement,
+        summary=build_generation_summary(
+            result,
+            get_project_files(project)
+        ),
+        model=result.get("model")
+    )
+
+    # Open the project's chat: the summary is the first answer and the
+    # question box sits at the bottom for follow-ups.
+    open_chat(project)
+
+    return True
+
+
+def render_home():
+
+    value = st.chat_input(
+        "Ask a PHP question or describe a project…",
+        accept_file=True,
+        file_type=ATTACHMENT_TYPES,
+        key="home_input"
+    )
+
+    prompt, attachment = None, None
+
+    if value:
+        prompt = (getattr(value, "text", None) or "").strip()
+
+        try:
+            attachment = attachment_from_chat_input(value)
+        except Exception as e:
+            st.error(f"Could not save the attachment: {e}")
+
+        if attachment and not prompt:
+            prompt = "Create a PHP project based on the attached file."
+
+    else:
+        prompt = (st.session_state.pop("pending_prompt", None) or "").strip()
+
+    if prompt:
+
+        if handle_request(prompt, attachment):
+            st.rerun()
+
+        return
+
+    # ---------------- empty state ----------------
+    st.markdown(
+        '<div class="vc-hero"><div class="vc-logo">PHP</div>'
+        "<h1>What do you want to build?</h1>"
+        "<p>Describe a project to generate it, or ask any PHP "
+        "question.</p></div>",
+        unsafe_allow_html=True
+    )
+
+    with st.container(key="example_chips"):
+
+        for row in range(0, len(EXAMPLE_PROMPTS), 3):
+
+            columns = st.columns(3)
+
+            for column, (kind, label, prompt_text) in zip(
+                columns, EXAMPLE_PROMPTS[row:row + 3]
+            ):
+
+                column.button(
+                    f"**{kind}**  \n{label}",
+                    key=f"example_{row}_{label}",
+                    use_container_width=True,
+                    on_click=queue_prompt,
+                    args=(prompt_text,)
+                )
+
+    st.caption(
+        "Projects open as a chat — keep asking questions about them. "
+        "Attach a file or screenshot with the ＋ in the box."
+    )
 
 
 # ============================================================
@@ -1304,248 +1618,7 @@ elif st.session_state.active_chat:
 
 elif mode == "Generate Project":
 
-    st.header(
-        "Generate PHP Project"
-    )
-
-    st.write(
-        "Ask a PHP question to get an explanation, or describe a "
-        "project to build it. Projects are saved automatically."
-    )
-
-    # A finished request empties the box for the next one. This must
-    # happen before the widget is created.
-    if st.session_state.pop("clear_requirement", False):
-        st.session_state.requirement_text_area = ""
-
-    requirement = st.text_area(
-        "Ask or Describe",
-        height=180,
-        placeholder=(
-            "Ask a question (e.g. explain database connection) "
-            "or describe a project to build..."
-        ),
-        key="requirement_text_area"
-    )
-
-    render_requirement_attachment_menu()
-
-    # Show the currently selected attachment outside the popover.
-    uploaded_info = st.session_state.get(
-        "uploaded_file_info"
-    )
-
-    if uploaded_info:
-        attachment_name = uploaded_info.get(
-            "name",
-            "Uploaded attachment"
-        )
-        attachment_size = uploaded_info.get(
-            "size",
-            0
-        )
-        attachment_type = uploaded_info.get(
-            "type",
-            "file"
-        )
-
-        if attachment_type == "photo":
-            attachment_icon = "🖼️"
-        else:
-            attachment_icon = "📎"
-
-        st.caption(
-            f"{attachment_icon} {attachment_name} • "
-            f"{format_file_size(attachment_size)} • "
-            f"Ready for generation"
-        )
-
-    generate = st.button(
-        "Generate",
-        type="primary",
-        use_container_width=True,
-        key="generate_project_button"
-    )
-
-    # Set when an answer is ready and its chat should be opened.
-    switch_view = False
-
-    if generate:
-
-        if not requirement.strip():
-
-            st.warning(
-                "Please enter a project requirement."
-            )
-
-        elif detect_request_type(
-            requirement,
-            "Auto"
-        ) == EXPLAIN:
-
-            # Explanation only: no project, no files, and it does not
-            # use up a generation. Then open it as a chat so follow-up
-            # questions can be asked below.
-            explanation_id = show_explanation(requirement)
-
-            if explanation_id:
-                open_explanation(explanation_id)
-                st.session_state.clear_requirement = True
-                switch_view = True
-
-        # Take a generation slot before starting (given back on failure).
-        elif not (
-            slot := get_generation_limiter().try_acquire(current_user_id())
-        )[0]:
-
-            _, reason, wait_seconds, _ = slot
-
-            if reason == "global":
-                st.warning(
-                    "The app has reached its generation limit for this "
-                    "hour (shared by all users). Try again in about "
-                    f"{format_wait(wait_seconds)}. Explanations still work."
-                )
-            else:
-                st.warning(
-                    f"You've used all {GENERATIONS_PER_WINDOW} free "
-                    f"generations for now. Try again in about "
-                    f"{format_wait(wait_seconds)}. Explanations still work."
-                )
-
-        else:
-
-            slot_token = slot[3]
-
-            # Project name is made automatically from the requirement.
-            project_name = make_project_name(
-                requirement
-            )
-
-            progress = st.progress(
-                0
-            )
-
-            status = st.empty()
-
-            # Live view of the project while the model writes it.
-            live = st.empty()
-
-            try:
-
-                # --------------------------------------------
-                # GENERATION
-                # --------------------------------------------
-
-                status.info(
-                    "Generating PHP project with RAG + Gemini..."
-                )
-
-                progress.progress(
-                    20
-                )
-
-                coder = PHPVibeCoder(
-                    max_retries=3
-                )
-
-                # ------------------------------------------------
-                # OPTIONAL USER ATTACHMENT
-                # ------------------------------------------------
-
-                attachment_path = None
-                attachment_type = None
-
-                uploaded_info = st.session_state.get(
-                    "uploaded_file_info"
-                )
-
-                if uploaded_info:
-                    attachment_path = uploaded_info.get("path")
-                    attachment_type = uploaded_info.get("type")
-
-                    if attachment_path:
-                        status.info(
-                            "Generating PHP project with "
-                            "RAG + Gemini + uploaded input..."
-                        )
-
-                result = coder.run(
-                    requirement=requirement,
-                    project_name=project_name,
-                    attachment_path=attachment_path,
-                    attachment_type=attachment_type,
-                    on_progress=make_live_preview(
-                        live,
-                        status,
-                        progress
-                    )
-                )
-
-                live.empty()
-
-                progress.progress(
-                    100
-                )
-
-                st.session_state.generation_response = result
-
-                st.session_state.current_project = result.get(
-                    "project",
-                    project_name
-                )
-
-                status.empty()
-
-                progress.empty()
-
-                # --------------------------------------------
-                # SAVE TO HISTORY (shows in the sidebar)
-                # --------------------------------------------
-
-                project = st.session_state.current_project
-
-                create_history(
-                    project=project,
-                    requirement=requirement,
-                    summary=build_generation_summary(
-                        result,
-                        get_project_files(project)
-                    ),
-                    model=result.get("model")
-                )
-
-                # Open the project's chat right away, like ChatGPT:
-                # the summary is the first answer and the question
-                # box sits at the bottom for follow-ups.
-                open_chat(project)
-
-                st.session_state.clear_requirement = True
-
-                switch_view = True
-
-            except Exception as e:
-
-                # Failed runs do not use up a generation.
-                get_generation_limiter().release(
-                    current_user_id(),
-                    slot_token
-                )
-
-                progress.empty()
-
-                status.empty()
-
-                live.empty()
-
-                show_error(
-                    "Error while running Vibe Coder.",
-                    e
-                )
-
-    # Outside the try block: st.rerun() works by raising an exception.
-    if switch_view:
-        st.rerun()
+    render_home()
 
 
 # ============================================================

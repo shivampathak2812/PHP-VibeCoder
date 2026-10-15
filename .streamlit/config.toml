@@ -1,3 +1,13 @@
 [server]
 fileWatcherType = "none"
 maxUploadSize = 500
+
+[theme]
+base = "dark"
+primaryColor = "#777BB4"
+backgroundColor = "#0f1117"
+secondaryBackgroundColor = "#1c2030"
+textColor = "#e7e9f0"
+borderColor = "#2a2f42"
+showWidgetBorder = true
+baseRadius = "0.6rem"
