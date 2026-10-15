@@ -1,5 +1,6 @@
 from agents.gemini_model_manager import GeminiModelManager, TASK_LIGHT
 from rag.context_builder import PHPContextBuilder
+from agents.reply_language import language_instruction
 
 
 class PHPExplainAgent:
@@ -83,9 +84,8 @@ class PHPExplainAgent:
 
         conversation = self.format_history(history)
 
-        shared_rules = """
-- Reply in the same language style the user used
-  (English, Hindi, or Hinglish).
+        shared_rules = f"""
+- {language_instruction(question)}
 - Use code only to illustrate: SHORT snippets, each under 25 lines.
 - Do NOT create a full project, folder structure, FILE: sections,
   CSS, or complete pages.

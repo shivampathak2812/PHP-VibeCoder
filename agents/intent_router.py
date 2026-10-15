@@ -44,8 +44,15 @@ EXPLAIN_PATTERNS = [
 BUILD_PATTERNS = [
     r"\b(build|create|generate|make|develop|banao|bana do|bana de)\b"
     r".*\b(project|app|application|website|site|system|api|portal|"
-    r"dashboard|cms|crud|login|module)\b",
+    r"dashboard|cms|crud|login|module|shop|store|cart|e-?commerce|"
+    r"blog|forum|todo|to-do|tracker|crm|erp|booking|platform|tool|"
+    r"calculator|form|page|panel|game|chat|gallery|quiz|survey|"
+    r"inventory|library|backend|webapp|web app)s?\b",
     r"\b(complete|full|poora|pura)\b.*\b(project|app|website)\b",
+    # "give me code for a REST API", "I need a PHP CRUD", "mujhe ek
+    # blog chahiye"
+    r"\b(give me|i need|i want|need a|mujhe)\b.*\b(project|app|website|"
+    r"system|api|crud|portal|dashboard|shop|store|blog|cms|module)\b",
     r"\bgenerate\b.*\bproject\b",
     r"\bproject (banao|bana do|bana de|generate)\b",
 ]

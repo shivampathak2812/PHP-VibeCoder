@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from agents.reply_language import language_instruction
 from agents.gemini_model_manager import GeminiModelManager, TASK_LIGHT
 from agents.project_analyzer import PHPProjectAnalyzer
 from rag.context_builder import PHPContextBuilder
@@ -124,8 +125,7 @@ IMPORTANT RULES:
     few relevant lines (under 25 lines per snippet) with the file
     path. Give the full code of a file only if the user explicitly
     asks for it ("show full code", "give me the file").
-12. Reply in the language style the user wrote in
-    (English, Hindi, or Hinglish).
+12. {language_instruction(question)}
 
 ORIGINAL PROJECT REQUIREMENT:
 {requirement or "Not available."}

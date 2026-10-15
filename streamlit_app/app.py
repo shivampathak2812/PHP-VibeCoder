@@ -27,6 +27,12 @@ from agents.php_tester import PHPTester
 from agents.explain_agent import PHPExplainAgent
 from agents.intent_router import classify_intent, rule_based_intent, EXPLAIN, BUILD
 from agents.gemini_model_manager import GeminiModelManager
+from streamlit_app.rate_limiter import (
+    GenerationLimiter,
+    GENERATIONS_PER_WINDOW,
+    WINDOW_SECONDS,
+    user_id_from_context,
+)
 from streamlit_app.history_store import (
     append_message,
     create_history,
@@ -55,9 +61,8 @@ UPLOADED_FILES_DIR = os.path.join(
 
 os.makedirs(UPLOADED_FILES_DIR, exist_ok=True)
 
-# Cooldown when everyone shares the app's Gemini key.
-GENERATIONS_PER_WINDOW = 3
-GENERATION_WINDOW_SECONDS = 10 * 60
+# Generation limits are kept on the server (see rate_limiter.py), so
+# refreshing the page or opening a new tab does not reset them.
 
 
 st.set_page_config(
@@ -81,7 +86,6 @@ defaults = {
     "upload_message": None,
     "active_chat": None,
     "active_explanation": None,
-    "generation_times": [],
 }
 
 for key, value in defaults.items():
@@ -174,39 +178,23 @@ def read_project_file(
         return f"Unable to read file:\n{e}"
 
 
-def recent_generation_times():
+@st.cache_resource
+def get_generation_limiter():
+    """One limiter shared by every session of this app process."""
+    return GenerationLimiter()
 
-    now = time.time()
 
-    times = [
-        t
-        for t in st.session_state.generation_times
-        if now - t < GENERATION_WINDOW_SECONDS
-    ]
-
-    st.session_state.generation_times = times
-
-    return times
+def current_user_id():
+    return user_id_from_context(st.context)
 
 
 def generations_left():
-
-    return max(
-        0,
-        GENERATIONS_PER_WINDOW - len(recent_generation_times())
-    )
+    return get_generation_limiter().left(current_user_id())
 
 
-def seconds_until_next_generation():
-
-    times = recent_generation_times()
-
-    if len(times) < GENERATIONS_PER_WINDOW:
-        return 0
-
-    return int(
-        GENERATION_WINDOW_SECONDS - (time.time() - min(times))
-    ) + 1
+def format_wait(seconds):
+    minutes = max(1, round(seconds / 60))
+    return f"{minutes} minute(s)"
 
 
 def open_chat(project):
@@ -1003,7 +991,7 @@ def render_usage_sidebar():
 
     usage_placeholder.caption(
         f"Generations left: {left}/{GENERATIONS_PER_WINDOW} "
-        f"(resets every {GENERATION_WINDOW_SECONDS // 60} min)"
+        f"(each one frees up {WINDOW_SECONDS // 60} min after use)"
     )
 
 
@@ -1405,20 +1393,29 @@ elif mode == "Generate Project":
                 st.session_state.clear_requirement = True
                 switch_view = True
 
-        elif generations_left() == 0:
+        # Take a generation slot before starting (given back on failure).
+        elif not (
+            slot := get_generation_limiter().try_acquire(current_user_id())
+        )[0]:
 
-            wait_minutes = max(
-                1,
-                round(seconds_until_next_generation() / 60)
-            )
+            _, reason, wait_seconds, _ = slot
 
-            st.warning(
-                f"You've used all {GENERATIONS_PER_WINDOW} free "
-                f"generations for now. Try again in about "
-                f"{wait_minutes} minute(s)."
-            )
+            if reason == "global":
+                st.warning(
+                    "The app has reached its generation limit for this "
+                    "hour (shared by all users). Try again in about "
+                    f"{format_wait(wait_seconds)}. Explanations still work."
+                )
+            else:
+                st.warning(
+                    f"You've used all {GENERATIONS_PER_WINDOW} free "
+                    f"generations for now. Try again in about "
+                    f"{format_wait(wait_seconds)}. Explanations still work."
+                )
 
         else:
+
+            slot_token = slot[3]
 
             # Project name is made automatically from the requirement.
             project_name = make_project_name(
@@ -1491,11 +1488,6 @@ elif mode == "Generate Project":
                     100
                 )
 
-                # Only count runs that produced a project.
-                st.session_state.generation_times.append(
-                    time.time()
-                )
-
                 st.session_state.generation_response = result
 
                 st.session_state.current_project = result.get(
@@ -1533,6 +1525,12 @@ elif mode == "Generate Project":
                 switch_view = True
 
             except Exception as e:
+
+                # Failed runs do not use up a generation.
+                get_generation_limiter().release(
+                    current_user_id(),
+                    slot_token
+                )
 
                 progress.empty()
 
