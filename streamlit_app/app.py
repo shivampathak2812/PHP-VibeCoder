@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import shutil
@@ -23,11 +24,17 @@ from agents.vibe_coder import PHPVibeCoder
 from agents.code_understanding_agent import PHPCodeUnderstandingAgent
 from agents.refactor_agent import PHPRefactorAgent
 from agents.php_tester import PHPTester
+from agents.explain_agent import PHPExplainAgent
+from agents.intent_router import classify_intent, rule_based_intent, EXPLAIN, BUILD
+from agents.gemini_model_manager import GeminiModelManager
 from streamlit_app.history_store import (
     append_message,
     create_history,
     get_or_create_history,
     list_projects_with_history,
+    save_explanation,
+    load_explanation,
+    list_explanations,
 )
 
 
@@ -73,6 +80,7 @@ defaults = {
     "uploaded_file_info": None,
     "upload_message": None,
     "active_chat": None,
+    "active_explanation": None,
     "user_api_key": "",
     "generation_times": [],
 }
@@ -216,16 +224,24 @@ def seconds_until_next_generation():
 
 def open_chat(project):
     st.session_state.active_chat = project
+    st.session_state.active_explanation = None
     st.session_state.current_project = project
+
+
+def open_explanation(explanation_id):
+    st.session_state.active_explanation = explanation_id
+    st.session_state.active_chat = None
 
 
 def start_new_project():
     st.session_state.active_chat = None
+    st.session_state.active_explanation = None
     st.session_state.mode = "Generate Project"
 
 
 def on_mode_change():
     st.session_state.active_chat = None
+    st.session_state.active_explanation = None
 
 
 def build_generation_summary(result, files):
@@ -308,6 +324,129 @@ def show_error(message, error):
     st.error(message)
 
     st.exception(error)
+
+
+
+def detect_request_type(text, choice):
+    """
+    choice: "Auto", "Explain only" or "Build project" from the UI.
+    Returns EXPLAIN or BUILD.
+    """
+
+    if choice == "Explain only":
+        return EXPLAIN
+
+    if choice == "Build project":
+        return BUILD
+
+    # Auto: free rules first, Gemini only if the rules are unsure.
+    intent = rule_based_intent(text)
+
+    if intent:
+        return intent
+
+    return classify_intent(
+        text,
+        model_manager=GeminiModelManager(
+            api_key=get_user_api_key()
+        )
+    )
+
+
+def show_explanation(question):
+
+    agent = PHPExplainAgent(
+        api_key=get_user_api_key()
+    )
+
+    # Looking up PHP docs happens before the first word appears.
+    try:
+
+        with st.spinner("Searching PHP documentation..."):
+            prompt = agent.build_prompt(question)
+
+    except Exception as e:
+
+        show_error("Error while explaining.", e)
+
+        return
+
+    st.subheader("Explanation")
+
+    # The answer appears word by word.
+    try:
+
+        answer = st.write_stream(
+            agent.explain_stream(prompt)
+        )
+
+    except Exception as e:
+
+        show_error("Error while explaining.", e)
+
+        return
+
+    model = agent.model_manager.last_model
+
+    st.caption(
+        "Explanation only: no project was generated."
+        + (f" Model: {model}" if model else "")
+    )
+
+    # Saved to the sidebar so it can be reopened later.
+    try:
+        save_explanation(
+            question,
+            answer,
+            model
+        )
+    except Exception as e:
+        st.caption(f"Could not save this explanation: {e}")
+
+
+
+
+
+NAME_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with",
+    "using", "use", "me", "my", "i", "want", "need", "please", "that",
+    "which", "is", "it", "can", "should", "will", "be", "by", "from",
+    "create", "build", "make", "generate", "develop", "write", "give",
+    "php", "project", "app", "application", "complete", "full", "simple",
+    "banao", "bana", "do", "de", "ek", "mujhe", "chahiye", "aur", "ka",
+    "ki", "ke", "mein", "me",
+}
+
+
+def make_project_name(requirement):
+    """
+    Builds a folder name from the requirement, e.g.
+    "create a login system with mysql" -> "login-system-mysql".
+    Adds -2, -3 ... if that folder already exists.
+    """
+
+    words = re.findall(
+        r"[a-z0-9]+",
+        requirement.lower()
+    )
+
+    keep = [
+        w for w in words
+        if w not in NAME_STOPWORDS
+    ][:3]
+
+    base = "-".join(keep) or "php-project"
+
+    name = base
+    number = 2
+
+    existing = set(get_project_directories())
+
+    while name in existing:
+        name = f"{base}-{number}"
+        number += 1
+
+    return name
 
 
 def get_language(filename):
@@ -861,13 +1000,21 @@ def render_history_sidebar():
             GENERATED_PROJECTS_DIR
         )
 
-        if not items:
+        explanations = list_explanations()
+
+        if not items and not explanations:
 
             st.caption(
-                "No projects yet."
+                "Nothing yet."
             )
 
             return
+
+        if items:
+
+            st.caption(
+                "Projects"
+            )
 
         for item in items:
 
@@ -892,6 +1039,78 @@ def render_history_sidebar():
                 on_click=open_chat,
                 args=(project,)
             )
+
+        if explanations:
+
+            st.caption(
+                "Explanations"
+            )
+
+        for record in explanations:
+
+            question = (
+                record.get("question") or ""
+            ).strip().replace("\n", " ")
+
+            short = (
+                question[:28] + "..."
+                if len(question) > 28
+                else question
+            )
+
+            st.button(
+                f"💡 {short}",
+                key=f"explain_{record['id']}",
+                help=question[:200] or None,
+                use_container_width=True,
+                type=(
+                    "primary"
+                    if st.session_state.active_explanation == record["id"]
+                    else "secondary"
+                ),
+                on_click=open_explanation,
+                args=(record["id"],)
+            )
+
+
+def render_explanation(explanation_id):
+
+    record = load_explanation(
+        explanation_id
+    )
+
+    if not record:
+
+        st.warning(
+            "This explanation no longer exists."
+        )
+
+        return
+
+    st.header(
+        "💡 Explanation"
+    )
+
+    with st.chat_message("user"):
+
+        st.markdown(
+            record.get("question", "")
+        )
+
+    with st.chat_message("assistant"):
+
+        st.markdown(
+            record.get("answer", "")
+        )
+
+    st.caption(
+        f"Saved {record.get('created_at', '')}"
+        + (
+            f" • Model: {record['model']}"
+            if record.get("model")
+            else ""
+        )
+    )
 
 
 def render_chat(project):
@@ -971,33 +1190,36 @@ def render_chat(project):
 
     with st.chat_message("assistant"):
 
-        with st.spinner(
-            "Thinking..."
-        ):
+        try:
 
-            try:
+            agent = PHPCodeUnderstandingAgent(
+                api_key=get_user_api_key()
+            )
 
-                agent = PHPCodeUnderstandingAgent(
-                    api_key=get_user_api_key()
-                )
+            with st.spinner(
+                "Analyzing project..."
+            ):
 
-                answer = agent.ask(
+                prompt = agent.build_prompt(
                     project_path=project_dir,
                     question=question,
                     history=earlier_messages,
                     requirement=record.get("requirement")
                 )
 
-            except Exception as e:
+            # The answer appears word by word.
+            answer = st.write_stream(
+                agent.ask_stream(prompt)
+            )
 
-                show_error(
-                    "Error while answering.",
-                    e
-                )
+        except Exception as e:
 
-                return
+            show_error(
+                "Error while answering.",
+                e
+            )
 
-        st.markdown(answer)
+            return
 
     append_message(record, "user", question)
     append_message(record, "assistant", answer)
@@ -1007,7 +1229,14 @@ def render_chat(project):
 # CHAT FOR A PROJECT FROM HISTORY
 # ============================================================
 
-if st.session_state.active_chat:
+if st.session_state.active_explanation:
+
+    render_explanation(
+        st.session_state.active_explanation
+    )
+
+
+elif st.session_state.active_chat:
 
     render_chat(
         st.session_state.active_chat
@@ -1025,13 +1254,17 @@ elif mode == "Generate Project":
     )
 
     st.write(
-        "Describe your requirement and generate a complete PHP project."
+        "Ask a PHP question to get an explanation, or describe a "
+        "project to build it. Projects are saved automatically."
     )
 
     requirement = st.text_area(
-        "Project Requirement",
+        "Ask or Describe",
         height=180,
-        placeholder="Describe your PHP project here...",
+        placeholder=(
+            "Ask a question (e.g. explain database connection) "
+            "or describe a project to build..."
+        ),
         key="requirement_text_area"
     )
 
@@ -1067,14 +1300,8 @@ elif mode == "Generate Project":
             f"Ready for generation"
         )
 
-    project_name = st.text_input(
-        "Project Name",
-        value="my-php-project",
-        key="requirement_project_name"
-    )
-
     generate = st.button(
-        "Generate Project",
+        "Generate",
         type="primary",
         use_container_width=True,
         key="generate_project_button"
@@ -1088,11 +1315,14 @@ elif mode == "Generate Project":
                 "Please enter a project requirement."
             )
 
-        elif not project_name.strip():
+        elif detect_request_type(
+            requirement,
+            "Auto"
+        ) == EXPLAIN:
 
-            st.warning(
-                "Please enter a project name."
-            )
+            # Explanation only: no project, no files, no history,
+            # and it does not use up a generation.
+            show_explanation(requirement)
 
         elif generations_left() == 0:
 
@@ -1110,13 +1340,9 @@ elif mode == "Generate Project":
 
         else:
 
-            project_name = (
-                project_name
-                .strip()
-                .replace(
-                    " ",
-                    "-"
-                )
+            # Project name is made automatically from the requirement.
+            project_name = make_project_name(
+                requirement
             )
 
             progress = st.progress(

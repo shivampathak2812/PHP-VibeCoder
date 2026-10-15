@@ -5,102 +5,85 @@ declare(strict_types=1);
 namespace App;
 
 use PDO;
+use InvalidArgumentException;
+use RuntimeException;
 
 class Auth
 {
-    private PDO $db;
-
-    public function __construct()
+    public function __construct(private PDO $db)
     {
-        $this::startSecureSession();
-        $this->db = Database::getConnection();
     }
 
-    public static function startSecureSession(): void
+    public function register(string $fullName, string $email, string $password): bool
     {
-        if (session_status() === PHP_SESSION_NONE) {
-            session_start([
-                'cookie_httponly' => true,
-                'cookie_samesite' => 'Strict',
-                'use_only_cookies' => true,
-            ]);
-        }
-    }
+        $fullName = trim($fullName);
+        $email = trim($email);
 
-    public function register(string $username, string $email, string $password): array
-    {
-        $username = trim($username);
-        $email = filter_var(trim($email), FILTER_VALIDATE_EMAIL);
-
-        if (!$email) {
-            return ['success' => false, 'message' => 'Invalid email address format.'];
+        if (empty($fullName)) {
+            throw new InvalidArgumentException("Full Name is required.");
         }
 
-        if (strlen($username) < 3 || strlen($username) > 50) {
-            return ['success' => false, 'message' => 'Username must be between 3 and 50 characters.'];
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            throw new InvalidArgumentException("Please enter a valid email address.");
         }
 
         if (strlen($password) < 8) {
-            return ['success' => false, 'message' => 'Password must be at least 8 characters long.'];
+            throw new InvalidArgumentException("Password must be at least 8 characters long.");
         }
 
-        // Check if user or email already exists
-        $stmt = $this->db->prepare('SELECT id FROM users WHERE email = :email OR username = :username LIMIT 1');
-        $stmt->execute([
-            'email' => $email,
-            'username' => $username,
-        ]);
-
+        $stmt = $this->db->prepare("SELECT id FROM users WHERE email = :email LIMIT 1");
+        $stmt->execute(['email' => $email]);
         if ($stmt->fetch()) {
-            return ['success' => false, 'message' => 'Username or Email is already registered.'];
+            throw new RuntimeException("An account with this email address already exists.");
         }
 
-        $passwordHash = password_hash($password, PASSWORD_DEFAULT);
+        $hashedPassword = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
 
-        $insertStmt = $this->db->prepare('INSERT INTO users (username, email, password_hash) VALUES (:username, :email, :password_hash)');
-        $created = $insertStmt->execute([
-            'username' => $username,
-            'email' => $email,
-            'password_hash' => $passwordHash,
+        $stmt = $this->db->prepare(
+            "INSERT INTO users (full_name, email, password, created_at) VALUES (:full_name, :email, :password, NOW())"
+        );
+
+        return $stmt->execute([
+            'full_name' => $fullName,
+            'email'     => $email,
+            'password'  => $hashedPassword,
         ]);
-
-        if ($created) {
-            return ['success' => true, 'message' => 'Registration successful! You can now log in.'];
-        }
-
-        return ['success' => false, 'message' => 'An error occurred during registration. Please try again.'];
     }
 
-    public function login(string $identity, string $password): array
+    public function login(string $email, string $password): bool
     {
-        $identity = trim($identity);
+        $email = trim($email);
 
-        if (empty($identity) || empty($password)) {
-            return ['success' => false, 'message' => 'Please fill in all required fields.'];
+        if (empty($email) || empty($password)) {
+            throw new InvalidArgumentException("Please fill in all required fields.");
         }
 
-        $stmt = $this->db->prepare('SELECT id, username, email, password_hash FROM users WHERE email = :identity OR username = :identity LIMIT 1');
-        $stmt->execute(['identity' => $identity]);
+        $stmt = $this->db->prepare("SELECT id, full_name, email, password FROM users WHERE email = :email LIMIT 1");
+        $stmt->execute(['email' => $email]);
         $user = $stmt->fetch();
 
-        if (!$user || !password_verify($password, $user['password_hash'])) {
-            return ['success' => false, 'message' => 'Invalid credentials provided.'];
+        if ($user && password_verify($password, $user['password'])) {
+            Session::start();
+            session_regenerate_id(true);
+
+            Session::set('user_id', (int)$user['id']);
+            Session::set('user_name', $user['full_name']);
+            Session::set('user_email', $user['email']);
+
+            return true;
         }
 
-        // Regenerate session ID to prevent session fixation attacks
-        session_regenerate_id(true);
-
-        $_SESSION['user_id'] = (int)$user['id'];
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['email'] = $user['email'];
-        $_SESSION['logged_in'] = true;
-
-        return ['success' => true, 'message' => 'Login successful.'];
+        return false;
     }
 
     public function isLoggedIn(): bool
     {
-        return isset($_SESSION['logged_in']) && $_SESSION['logged_in'] === true;
+        return Session::get('user_id') !== null;
+    }
+
+    public function logout(): void
+    {
+        Session::destroy();
     }
 
     public function getCurrentUser(): ?array
@@ -110,29 +93,9 @@ class Auth
         }
 
         return [
-            'id' => $_SESSION['user_id'],
-            'username' => $_SESSION['username'],
-            'email' => $_SESSION['email'],
+            'id'    => Session::get('user_id'),
+            'name'  => Session::get('user_name'),
+            'email' => Session::get('user_email'),
         ];
-    }
-
-    public function logout(): void
-    {
-        $_SESSION = [];
-
-        if (ini_get('session.use_cookies')) {
-            $params = session_get_cookie_params();
-            setcookie(
-                session_name(),
-                '',
-                time() - 42000,
-                $params['path'],
-                $params['domain'],
-                $params['secure'],
-                $params['httponly']
-            );
-        }
-
-        session_destroy();
     }
 }

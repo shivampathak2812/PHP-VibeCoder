@@ -77,13 +77,14 @@ class PHPCodeUnderstandingAgent:
 
         return "\n\n".join(lines)
 
-    def ask(self, project_path, question, history=None, requirement=None):
-        """
-        Understand the project and answer the user's question.
-
-        history: earlier chat messages [{"role", "content"}, ...]
-        requirement: the original requirement the project was built from
-        """
+    def build_prompt(
+        self,
+        project_path,
+        question,
+        history=None,
+        requirement=None
+    ):
+        """Analyze the project and build the full prompt."""
 
         print("\nAnalyzing PHP project...")
 
@@ -116,6 +117,15 @@ IMPORTANT RULES:
 7. Keep technical explanations clear and structured.
 8. Do not modify or generate code unless the user explicitly asks.
 9. Use the earlier conversation to understand follow-up questions.
+10. Answer ONLY what was asked. If the user asks to explain one
+    topic (for example the database connection), explain just that
+    topic and the files directly involved.
+11. Do NOT paste whole files or the whole project. Quote only the
+    few relevant lines (under 25 lines per snippet) with the file
+    path. Give the full code of a file only if the user explicitly
+    asks for it ("show full code", "give me the file").
+12. Reply in the language style the user wrote in
+    (English, Hindi, or Hinglish).
 
 ORIGINAL PROJECT REQUIREMENT:
 {requirement or "Not available."}
@@ -151,6 +161,34 @@ Provide the answer in this structure when applicable:
 
 Only include sections that are relevant to the question.
 """
+
+        return prompt
+
+    def ask_stream(self, prompt):
+        """
+        Yields the answer piece by piece.
+        Pass the text returned by build_prompt().
+        """
+
+        yield from self.model_manager.generate_stream(
+            prompt,
+            max_output_tokens=self.MAX_OUTPUT_TOKENS
+        )
+
+    def ask(self, project_path, question, history=None, requirement=None):
+        """
+        Understand the project and answer the user's question.
+
+        history: earlier chat messages [{"role", "content"}, ...]
+        requirement: the original requirement the project was built from
+        """
+
+        prompt = self.build_prompt(
+            project_path,
+            question,
+            history=history,
+            requirement=requirement
+        )
 
         print("Sending project context to Gemini...")
 

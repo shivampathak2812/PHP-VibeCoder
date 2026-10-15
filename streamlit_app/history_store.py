@@ -169,3 +169,94 @@ def list_projects_with_history(generated_projects_dir):
     items.sort(key=lambda item: item["sort_key"], reverse=True)
 
     return items
+
+
+# ============================================================
+# EXPLANATIONS (questions answered without building a project)
+# Saved as chat_history/explanations/<id>.json
+# ============================================================
+
+EXPLAIN_DIR = os.path.join(
+    HISTORY_DIR,
+    "explanations"
+)
+
+
+def _explanation_path(explanation_id):
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "-", explanation_id)
+
+    return os.path.join(
+        EXPLAIN_DIR,
+        f"{safe_id}.json"
+    )
+
+
+def save_explanation(question, answer, model=None):
+    """Save one explanation and return its id."""
+
+    os.makedirs(EXPLAIN_DIR, exist_ok=True)
+
+    words = re.findall(r"[a-z0-9]+", question.lower())[:4]
+
+    explanation_id = (
+        datetime.now().strftime("%Y%m%d-%H%M%S")
+        + "-"
+        + ("-".join(words) or "explanation")
+    )
+
+    record = {
+        "id": explanation_id,
+        "question": question,
+        "answer": answer,
+        "model": model,
+        "created_at": _now(),
+    }
+
+    with open(
+        _explanation_path(explanation_id),
+        "w",
+        encoding="utf-8"
+    ) as f:
+        json.dump(record, f, indent=2, ensure_ascii=False)
+
+    return explanation_id
+
+
+def load_explanation(explanation_id):
+
+    path = _explanation_path(explanation_id)
+
+    if not os.path.isfile(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def list_explanations():
+    """All saved explanations, newest first."""
+
+    if not os.path.isdir(EXPLAIN_DIR):
+        return []
+
+    items = []
+
+    for filename in os.listdir(EXPLAIN_DIR):
+
+        if not filename.endswith(".json"):
+            continue
+
+        record = load_explanation(filename[:-5])
+
+        if record:
+            items.append(record)
+
+    items.sort(
+        key=lambda r: r.get("created_at") or "",
+        reverse=True
+    )
+
+    return items
