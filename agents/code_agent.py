@@ -9,6 +9,7 @@ from agents.project_writer import ProjectWriter
 from agents.gemini_model_manager import GeminiModelManager
 from agents.php_rules import PHP_QUALITY_RULES
 from agents.complexity import estimate as estimate_complexity, effective_level
+from agents import feature_checker
 from agents.project_memory import (
     ProjectMemory, REUSE, ADAPT, base_project_text,
 )
@@ -19,7 +20,7 @@ CACHE_DIR = BASE_DIR / ".cache" / "generations"
 TEMPLATE_DIR = BASE_DIR / "templates" / "php_base"
 
 # Bump when the prompt changes, so old cached answers are not reused.
-PROMPT_VERSION = "2"
+PROMPT_VERSION = "3"
 
 # Requests that should NOT get the PDO/MySQL template files.
 NO_TEMPLATE_PATTERN = re.compile(
@@ -50,15 +51,22 @@ RULES:
 - Include every file needed (PHP, SQL, CSS, JS, config).
 - Do not claim the code was tested.
 
-KEEP THE OUTPUT SMALL (it is written to disk and read by code, not by
-people, so every extra line only costs time):
-- Use as few files as the requirement allows. Never write the same
-  file twice or a copy of it in another folder.
+COMPLETENESS:
+- Implement EVERY feature the requirement lists. For each thing the
+  user manages (contacts, deals, tasks, ...) include list, add, edit
+  and delete, plus any status/stage change the requirement implies.
+
+STRUCTURE AND SIZE (the output is written to disk, so skip anything
+that does not change how the app works):
+- One file per page or module (for example contacts.php, deals.php),
+  plus shared includes (header, footer, helpers). Do not put a whole
+  app in one file, and never write the same file twice.
 - No code comments, except one short line where the logic is not
-  obvious.
-- CSS: one stylesheet, at most about 80 lines, simple and clean.
-- No inline documentation pages, README or sample screenshots.
-- PROJECT OVERVIEW: at most 3 sentences. SETUP: at most 5 short steps.
+  obvious. No README or documentation pages.
+- CSS: one clean, responsive stylesheet that makes the app pleasant to
+  use (navigation, tables, forms, buttons, cards); no frameworks unless
+  the user asks.
+- PROJECT OVERVIEW: at most 3 sentences. SETUP: at most 6 short steps.
 """
 
 TEMPLATE_INSTRUCTIONS = """
@@ -79,6 +87,9 @@ src/Database.php (for example
 require_once __DIR__ . '/../src/Database.php'; from a file in public/).
 Inside a namespace call \\Database::connection().
 Never create another database connection class or config file.
+The database name comes from DB_NAME; in schema.sql create and USE a
+database named after the project (lowercase, underscores), e.g.
+CREATE DATABASE IF NOT EXISTS crm_app; USE crm_app;
 """
 
 OUTPUT_FORMAT = """
@@ -101,7 +112,7 @@ FILE: index.php
 Never put two files in one code block.
 
 SETUP
-At most 5 short numbered steps.
+At most 6 short numbered steps, including how to log in.
 """
 
 ADAPT_INSTRUCTIONS = """
@@ -119,6 +130,7 @@ RULES:
 - Same code quality and security rules as the base project:
   prepared statements, password_hash, CSRF tokens, escaped output.
 - No code comments except one short line where logic is not obvious.
+- Implement EVERY feature of the new requirement.
 
 OUTPUT FORMAT (follow exactly):
 
@@ -133,6 +145,27 @@ FILE: path/of/changed_or_new_file.php
 
 DELETE: path/of/removed_file.php   (only if needed)
 """
+
+
+DB_NAME_PATTERN = re.compile(
+    r"\b(?:CREATE\s+DATABASE(?:\s+IF\s+NOT\s+EXISTS)?|USE)\s+`?([A-Za-z0-9_]+)`?",
+    re.IGNORECASE,
+)
+
+
+def schema_database_name(project_dir):
+    """The database name used in the project's .sql files, if any."""
+
+    for path in sorted(Path(project_dir).rglob("*.sql")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        match = DB_NAME_PATTERN.search(text)
+        if match:
+            return match.group(1)
+
+    return None
 
 
 def _file_mentions_template(project_dir):
@@ -360,6 +393,10 @@ input. Do not ignore it.
         if not _file_mentions_template(project_dir):
             return
 
+        # Same database name as schema.sql, so the app connects to the
+        # database the SQL script creates.
+        db_name = schema_database_name(project_dir)
+
         for source in TEMPLATE_DIR.rglob("*"):
 
             if not source.is_file():
@@ -371,7 +408,62 @@ input. Do not ignore it.
                 continue
 
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+
+            text = source.read_text(encoding="utf-8")
+
+            if db_name:
+                text = text.replace("getenv('DB_NAME') ?: 'app'", f"getenv('DB_NAME') ?: '{db_name}'")
+                text = text.replace("DB_NAME=app", f"DB_NAME={db_name}")
+
+            target.write_text(text, encoding="utf-8")
+
+    def _complete_missing(self, requirement, project_name, project_dir,
+                          on_progress, thinking):
+        """
+        Requirement check (cheap, Groq first). If features are missing,
+        one more call writes only the files that add them.
+        Returns the extra model response ("" if nothing was added).
+        """
+
+        if not feature_checker.enabled():
+            return ""
+
+        try:
+            missing = feature_checker.find_missing(
+                self.model_manager, requirement, project_dir
+            )
+        except Exception as e:
+            print(f"Feature check failed: {e}")
+            return ""
+
+        if not missing:
+            return ""
+
+        prompt = (
+            feature_checker.COMPLETE_INSTRUCTIONS
+            + PHP_QUALITY_RULES
+            + "\nMISSING FEATURES TO ADD:\n"
+            + "\n".join(f"- {item}" for item in missing)
+            + f"\n\nPROJECT:\n{base_project_text(project_dir)}\n"
+            + f"\nREQUIREMENT:\n{requirement}\n"
+        )
+
+        try:
+
+            response, model = self._ask_model(
+                prompt, None, None, on_progress, thinking
+            )
+
+            if self.project_writer.extract_files(response):
+                self.project_writer.write_project(project_name, response)
+                self._apply_templates(project_dir, requirement)
+                print(f"Added missing features with {model}: {missing}")
+                return "\n\n" + response
+
+        except Exception as e:
+            print(f"Adding missing features failed: {e}")
+
+        return ""
 
     @staticmethod
     def _apply_deletes(project_dir, response):
@@ -484,9 +576,16 @@ input. Do not ignore it.
 
                 self._apply_templates(project_dir, requirement)
 
+                extra = self._complete_missing(
+                    requirement, project_name, project_dir,
+                    on_progress, thinking
+                )
+
                 # Only the model name is shown to the user; how the
                 # project was made stays internal (see "source").
-                return self._result(project_dir, response, model, "adapt")
+                return self._result(
+                    project_dir, response + extra, model, "adapt"
+                )
 
             except Exception as e:
 
@@ -507,6 +606,12 @@ input. Do not ignore it.
 
         self.project_writer.write_project(project_name, response)
         self._apply_templates(project_dir, requirement)
+
+        # Later FILE blocks replace earlier ones, so the cached answer
+        # rebuilds the completed project.
+        response += self._complete_missing(
+            requirement, project_name, project_dir, on_progress, thinking
+        )
 
         self._write_cache(cache_key, response, model)
 

@@ -237,7 +237,13 @@ generate_code(requirement, project_name, attachment_path, attachment_type, on_pr
                              src/Database.php, .env.example) when the code uses
                              Database:: and the request did not opt out
                              (mysqli, sqlite, laravel, "no database", ...)
-        _write_cache()
+        _complete_missing()                                   agents/feature_checker.py
+          find_missing(): requirement + trimmed code → small model (task light)
+                          → {"missing": [...]}
+          missing → one more call (COMPLETE_INSTRUCTIONS) writes only the
+                    files that add those features → write_project()
+          (also runs after ADAPT; FEATURE_CHECK=off disables it)
+        _write_cache()   (first answer + completion, so a cache hit is complete)
  → _result(): files, model, source = "cache" | "reuse" | "adapt" | "generated"
 ```
 

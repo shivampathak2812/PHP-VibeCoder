@@ -220,9 +220,11 @@ FAQ = [
             "5. A model writes the project, streamed live on screen "
             "file by file; a ready-made, secure database layer is added "
             "from templates.\n"
-            "6. Every PHP file is checked with `php -l`; broken files "
+            "6. A fast model checks the code against your requirement; "
+            "any missing feature is added.\n"
+            "7. Every PHP file is checked with `php -l`; broken files "
             "are fixed and tested again (up to 3 test rounds).\n"
-            "7. The project is saved and opens as a chat, where you can "
+            "8. The project is saved and opens as a chat, where you can "
             "ask questions or download it."
         ),
         "hinglish": (
@@ -236,9 +238,11 @@ FAQ = [
             "relevant hisse dhoondhe jaate hain.\n"
             "5. Model project likhta hai, screen par file by file live "
             "dikhta hai; secure database layer templates se judti hai.\n"
-            "6. Har PHP file `php -l` se check hoti hai; toot-ti files "
+            "6. Ek tez model code ko aapki requirement se milata hai; koi "
+            "feature chhoota ho to jod diya jaata hai.\n"
+            "7. Har PHP file `php -l` se check hoti hai; toot-ti files "
             "theek hoke dobara test hoti hain (3 test rounds tak).\n"
-            "7. Project save hota hai aur chat ki tarah khulta hai, "
+            "8. Project save hota hai aur chat ki tarah khulta hai, "
             "jahan sawaal pooch sakte ho ya download kar sakte ho."
         ),
     },

@@ -17,6 +17,20 @@ Security
 - Escape all output with htmlspecialchars($value, ENT_QUOTES, 'UTF-8').
 - Use password_hash() / password_verify() for passwords and CSRF tokens
   for state-changing forms.
+- Prepared statements are REAL (PDO emulation is off): a named
+  placeholder may appear only ONCE in a query. For the same value in
+  several places use different names (:q1, :q2, :q3). Bind LIMIT and
+  OFFSET with PDO::PARAM_INT.
+- Values read from the database can be NULL: use ($row['x'] ?? '')
+  before passing them to string functions or htmlspecialchars().
+
+Logins and sample users
+- Never write a password hash by hand in SQL or code: it will not
+  match any password. If the app has logins, include setup.php that
+  creates the first admin with password_hash() (and refuses to run
+  when an admin already exists), and/or a register page.
+- In SETUP, state exactly how to log in (which page to open first and
+  the username/password it creates).
 
 Error handling
 - Catch exceptions (PDOException, mysqli_sql_exception, ...), write the
