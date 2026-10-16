@@ -253,8 +253,15 @@ def build_generation_summary(result, files):
     if result.get("error"):
         lines.append(f"Problem: `{result.get('error')}`")
 
-    if result.get("model"):
-        lines.append(f"Model: `{result.get('model')}`")
+    # No model line when no AI was used (exact cache or reused project).
+    if result.get("model") and result.get("source") not in ("cache", "reuse"):
+        lines.append(
+            f"Model: `{result.get('model')}`"
+            + (
+                f" · thinking: `{result['thinking']}`"
+                if result.get("thinking") else ""
+            )
+        )
 
     if files:
         lines.append(

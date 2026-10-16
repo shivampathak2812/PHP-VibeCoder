@@ -10,6 +10,7 @@ from google import genai
 from google.genai import types
 
 from agents.fallback_providers import FallbackProviders
+from agents.complexity import effective_level
 
 
 load_dotenv()
@@ -326,9 +327,13 @@ Use the uploaded file as additional input for the project.
         """
         Request settings for one model.
 
-        thinking_level: Gemini 3.x thinks before answering, and that
-        hidden thinking adds a lot of waiting time. "low" keeps it
-        short. Set GEMINI_THINKING_LEVEL=off to use Google's default.
+        thinking_level: Gemini 3.x thinks before answering. More
+        thinking = better logic on hard tasks, but slower.
+        GEMINI_THINKING_LEVEL:
+          adaptive / not set -> the level asked for by the caller
+                                (agents/complexity.py), else "low"
+          low|medium|high|minimal -> that level for every request
+          off -> Google's default
         """
 
         options = {}
@@ -336,7 +341,7 @@ Use the uploaded file as additional input for the project.
         if max_output_tokens:
             options["max_output_tokens"] = max_output_tokens
 
-        level = (_read_env("GEMINI_THINKING_LEVEL") or "low").lower()
+        level = self._effective_thinking()
 
         if (
             level not in ("off", "none", "default", "")
@@ -350,6 +355,11 @@ Use the uploaded file as additional input for the project.
             return None
 
         return types.GenerateContentConfig(**options)
+
+    def _effective_thinking(self):
+        """The thinking level to use for the current request."""
+
+        return effective_level(getattr(self, "_request_thinking", None))
 
     def _thinking_rejected(self, model, error_text):
         """
@@ -798,6 +808,15 @@ Use the uploaded file as additional input for the project.
     # PUBLIC API: routes each task to the right provider first
     # ------------------------------------------------------------
 
+    def _set_request_thinking(self, thinking_level):
+        """
+        Remember the level for this request; Groq's gpt-oss models get
+        the same value as reasoning_effort.
+        """
+
+        self._request_thinking = thinking_level
+        self.fallback.reasoning_effort = self._effective_thinking()
+
     def _fallback_first(self, task, attachment_type):
         """
         Light tasks go to Groq / NVIDIA first. Images are the exception:
@@ -816,14 +835,20 @@ Use the uploaded file as additional input for the project.
         attachment_path=None,
         attachment_type=None,
         max_output_tokens=None,
-        task=TASK_HEAVY
+        task=TASK_HEAVY,
+        thinking_level=None
     ):
         """
+        thinking_level: "low" / "medium" / "high" for this request
+        (adaptive thinking), or None for the default.
+
         task=TASK_HEAVY (default): Gemini -> Groq -> NVIDIA
         task=TASK_LIGHT / TASK_CLASSIFY: Groq -> NVIDIA -> Gemini
 
         Returns {"success", "model", "response", "error"}.
         """
+
+        self._set_request_thinking(thinking_level)
 
         small_first = task == TASK_CLASSIFY
 
@@ -881,7 +906,8 @@ Use the uploaded file as additional input for the project.
         attachment_path=None,
         attachment_type=None,
         max_output_tokens=None,
-        task=TASK_HEAVY
+        task=TASK_HEAVY,
+        thinking_level=None
     ):
         """
         Like generate(), but yields the answer piece by piece.
@@ -893,6 +919,8 @@ Use the uploaded file as additional input for the project.
         """
 
         self.last_model = None
+
+        self._set_request_thinking(thinking_level)
 
         small_first = task == TASK_CLASSIFY
 

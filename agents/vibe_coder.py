@@ -2,7 +2,7 @@ from pathlib import Path
 
 from agents.code_agent import PHPCodeAgent
 from agents.php_tester import PHPTester
-from agents.debug_agent import PHPDebugAgent
+from agents.debug_agent import PHPDebugAgent, local_fix
 
 
 class PHPVibeCoder:
@@ -76,6 +76,13 @@ class PHPVibeCoder:
         return report
 
     def debug_project(self, report):
+        """
+        Fix files that failed php -l, cheapest step first:
+        1. local fixes with no AI (BOM, leftover ``` fences, <?php tag)
+        2. one AI request that returns only the changed lines (patch)
+        3. one AI request that returns whole files (fallback)
+        """
+
         failed_results = [
             result
             for result in report["results"]
@@ -89,21 +96,70 @@ class PHPVibeCoder:
         print("DEBUGGING ERRORS")
         print("=" * 70)
 
-        for result in failed_results:
-            print(f"- {result['file']}")
-
-        # One Gemini request for all broken files.
-        print("\nSending all errors to Debug Agent in one request...")
-
-        fixed_files = self.debug_agent.debug_files(
-            report["project_dir"],
-            failed_results
-        )
-
         allowed = {
             str(Path(result["file"]).resolve())
             for result in failed_results
         }
+
+        # ---------------- 1. local fixes ----------------
+        remaining = []
+
+        for result in failed_results:
+
+            path = Path(result["file"])
+
+            try:
+                code = path.read_text(encoding="utf-8")
+            except OSError:
+                remaining.append(result)
+                continue
+
+            fixed = local_fix(code)
+
+            if fixed != code:
+
+                path.write_text(fixed, encoding="utf-8")
+
+                retest = self.php_tester.test_file(path)
+
+                if retest["status"] == "PASS":
+                    print(f"Fixed locally (no AI): {path}")
+                    continue
+
+                result = retest
+
+            remaining.append(result)
+
+        if not remaining:
+            return
+
+        for result in remaining:
+            print(f"- {result['file']}")
+
+        # ---------------- 2. patch ----------------
+        try:
+
+            fixed_files, remaining = self.debug_agent.debug_files_patch(
+                report["project_dir"],
+                remaining
+            )
+
+        except Exception as e:
+
+            print(f"Patch debugging failed: {e}")
+            fixed_files = {}
+
+        # ---------------- 3. whole files ----------------
+        if remaining:
+
+            print("\nSome files need a full rewrite...")
+
+            fixed_files.update(
+                self.debug_agent.debug_files(
+                    report["project_dir"],
+                    remaining
+                )
+            )
 
         for file_path, corrected_code in fixed_files.items():
 
@@ -117,6 +173,28 @@ class PHPVibeCoder:
             )
 
             print(f"Fixed: {file_path}")
+
+    def _remember(self, requirement, project_dir):
+        """A tested project can be reused for similar requests later."""
+
+        # A reused project is already in the memory.
+        if self.last_generation and self.last_generation.get("source") == "reuse":
+            return
+
+        self.code_agent.remember_project(
+            requirement, project_dir, self._model_used()
+        )
+
+    def _source(self):
+        """"cache", "reuse", "adapt" or "generated"."""
+        if self.last_generation:
+            return self.last_generation.get("source")
+        return None
+
+    def _thinking_used(self):
+        if self.last_generation:
+            return self.last_generation.get("thinking")
+        return None
 
     def _model_used(self):
         if self.last_generation:
@@ -181,6 +259,8 @@ class PHPVibeCoder:
 
             if not report.get("php_available", True):
 
+                self._remember(requirement, project_dir)
+
                 print(
                     "\nPHP is not installed. "
                     "Skipping syntax validation."
@@ -193,7 +273,9 @@ class PHPVibeCoder:
                     "project": Path(project_dir).name,
                     "attempts": 0,
                     "test_report": report,
-                    "model": self._model_used()
+                    "model": self._model_used(),
+                    "thinking": self._thinking_used(),
+                    "source": self._source()
                 }
 
             # --------------------------------------------------
@@ -201,6 +283,8 @@ class PHPVibeCoder:
             # --------------------------------------------------
 
             if report["failed"] == 0:
+
+                self._remember(requirement, project_dir)
 
                 print("\n" + "=" * 70)
                 print("PROJECT VALIDATION SUCCESSFUL")
@@ -215,6 +299,8 @@ class PHPVibeCoder:
                     "success": True,
                     "validated": True,
                     "model": self._model_used(),
+                    "thinking": self._thinking_used(),
+                    "source": self._source(),
                     "project_dir": project_dir,
                     "project": Path(project_dir).name,
                     "attempts": attempt,
@@ -240,6 +326,8 @@ class PHPVibeCoder:
                     return {
                         "success": False,
                         "model": self._model_used(),
+                    "thinking": self._thinking_used(),
+                    "source": self._source(),
                         "project_dir": project_dir,
                         "project": Path(project_dir).name,
                         "attempts": attempt,
@@ -263,6 +351,8 @@ class PHPVibeCoder:
                 return {
                     "success": False,
                     "model": self._model_used(),
+                    "thinking": self._thinking_used(),
+                    "source": self._source(),
                     "project_dir": project_dir,
                     "project": Path(project_dir).name,
                     "attempts": attempt,

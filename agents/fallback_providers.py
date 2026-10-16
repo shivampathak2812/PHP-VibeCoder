@@ -148,6 +148,10 @@ class FallbackProviders:
         self.providers = []
         self.last_model = None
 
+        # Set per request by GeminiModelManager (adaptive thinking).
+        # gpt-oss accepts low / medium / high.
+        self.reasoning_effort = None
+
         # One entry per (provider, model), in priority order:
         # all Groq models, then all NVIDIA models.
         for provider in PROVIDERS:
@@ -275,7 +279,14 @@ class FallbackProviders:
             payload["stream"] = True
 
         if provider["label"] not in self._no_extra:
+
             payload.update(provider["extra"])
+
+            if (
+                "reasoning_effort" in payload
+                and self.reasoning_effort in ("low", "medium", "high")
+            ):
+                payload["reasoning_effort"] = self.reasoning_effort
 
         request = urllib.request.Request(
             provider["url"],

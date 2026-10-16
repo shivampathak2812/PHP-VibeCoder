@@ -115,10 +115,11 @@ NVIDIA_MODELS=nvidia/nemotron-3-super-120b-a12b
 Speed setting (optional):
 
 ```env
-# Gemini 3.x "thinks" before answering. low = faster (default),
-# minimal = fastest, medium/high = slower but more careful,
-# off = Google's default.
-GEMINI_THINKING_LEVEL=low
+# Gemini 3.x "thinks" before answering. Default "adaptive": each
+# project request is scored (agents/complexity.py) and gets low,
+# medium or high thinking. Set low / medium / high / minimal to use
+# one level for everything, or off for Google's default.
+GEMINI_THINKING_LEVEL=adaptive
 ```
 
 How requests are routed:
