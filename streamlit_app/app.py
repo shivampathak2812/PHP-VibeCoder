@@ -30,10 +30,12 @@ from agents.php_tester import PHPTester
 from agents.explain_agent import PHPExplainAgent
 from agents.intent_router import classify_intent, rule_based_intent, EXPLAIN, BUILD
 from agents.gemini_model_manager import GeminiModelManager
+from agents.faq import answer_faq
 from streamlit_app.rate_limiter import (
     GenerationLimiter,
     GENERATIONS_PER_WINDOW,
     WINDOW_SECONDS,
+    GLOBAL_GENERATIONS_PER_HOUR,
     user_id_from_context,
 )
 from streamlit_app.history_store import (
@@ -1050,7 +1052,7 @@ def render_explanation(explanation_id):
             record.get("answer", "")
         )
 
-        if record.get("model"):
+        if record.get("model") and record["model"] != FAQ_MODEL_LABEL:
             st.caption(f"Model: {record['model']}")
 
     for message in record.get("messages", []):
@@ -1082,24 +1084,33 @@ def render_explanation(explanation_id):
 
     with chat_bubble("assistant"):
 
-        try:
+        answer = faq_answer(question)
 
-            agent = PHPExplainAgent()
+        if answer:
 
-            with st.spinner("Searching PHP documentation..."):
-                prompt = agent.build_prompt(question, history=history)
+            st.markdown(answer)
+            model = None
 
-            answer = st.write_stream(
-                agent.explain_stream(prompt)
-            )
+        else:
 
-        except Exception as e:
+            try:
 
-            show_error("Error while answering.", e)
+                agent = PHPExplainAgent()
 
-            return
+                with st.spinner("Searching PHP documentation..."):
+                    prompt = agent.build_prompt(question, history=history)
 
-        model = agent.model_manager.last_model
+                answer = st.write_stream(
+                    agent.explain_stream(prompt)
+                )
+
+            except Exception as e:
+
+                show_error("Error while answering.", e)
+
+                return
+
+            model = agent.model_manager.last_model
 
         if model:
             st.caption(f"Model: {model}")
@@ -1219,6 +1230,58 @@ def render_project_actions(project):
             use_container_width=True,
             on_click=queue_project_tests
         )
+
+    render_single_file_download(project)
+
+
+def render_single_file_download(project):
+    """Dropdown under Download ZIP: pick one file and download only it."""
+
+    files = get_project_files(project)
+
+    if not files:
+        return
+
+    pick_column, button_column = st.columns([3, 1.25])
+
+    with pick_column:
+        selected = st.selectbox(
+            "Download a single file",
+            files,
+            index=None,
+            placeholder="Download a single file…",
+            key=f"single_file_{project}",
+            label_visibility="collapsed"
+        )
+
+    with button_column:
+
+        if selected:
+
+            path = os.path.join(GENERATED_PROJECTS_DIR, project, selected)
+
+            try:
+                with open(path, "rb") as handle:
+                    data = handle.read()
+            except OSError:
+                data = None
+
+            if data is not None:
+                st.download_button(
+                    "⬇ Download file",
+                    data=data,
+                    file_name=os.path.basename(selected),
+                    use_container_width=True,
+                    key=f"single_file_button_{project}"
+                )
+
+        else:
+            st.button(
+                "⬇ Download file",
+                disabled=True,
+                use_container_width=True,
+                key=f"single_file_disabled_{project}"
+            )
 
 
 def test_report_markdown(report):
@@ -1386,6 +1449,25 @@ def queue_prompt(prompt):
     st.session_state.pending_prompt = prompt
 
 
+# Shown as the "model" of answers that came from agents/faq.py.
+FAQ_MODEL_LABEL = "built-in FAQ (no AI call)"
+
+
+def faq_answer(question):
+    """Answer from the built-in FAQ about this app, or None (no LLM)."""
+
+    try:
+        return answer_faq(
+            question,
+            per_user=GENERATIONS_PER_WINDOW,
+            window=WINDOW_SECONDS // 60,
+            global_limit=GLOBAL_GENERATIONS_PER_HOUR,
+        )
+    except Exception as e:
+        print(f"FAQ lookup failed: {e}")
+        return None
+
+
 def attachment_from_chat_input(value):
     """Save the file sent with the chat box, in the old upload format."""
 
@@ -1442,6 +1524,25 @@ def handle_request(requirement, attachment=None):
                 f"{icon} {attachment['name']} • "
                 f"{format_file_size(attachment['size'])}"
             )
+
+    # ---------------- question about this app: no LLM ----------------
+    answer = None if attachment else faq_answer(requirement)
+
+    if answer:
+
+        with chat_bubble("assistant"):
+            st.markdown(answer)
+
+        try:
+            explanation_id = save_explanation(
+                requirement, answer, FAQ_MODEL_LABEL
+            )
+        except Exception as e:
+            st.caption(f"Could not save this answer: {e}")
+            return False
+
+        open_explanation(explanation_id)
+        return True
 
     # ---------------- explanation ----------------
     if detect_request_type(requirement, "Auto") == EXPLAIN:
@@ -1564,7 +1665,7 @@ def render_home():
     # ---------------- empty state ----------------
     st.markdown(
         '<div class="vc-hero"><div class="vc-logo">PHP</div>'
-        "<h1>What do you want to build?</h1>"
+        "<h1>PHP Vibe Coding</h1>"
         "<p>Describe a project to generate it, or ask any PHP "
         "question.</p></div>",
         unsafe_allow_html=True
